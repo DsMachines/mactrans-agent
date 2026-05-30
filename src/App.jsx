@@ -526,7 +526,7 @@ export default function App() {
       {/* Floating Low-Opacity Safe Mode trigger at bottom-left */}
       <button
         onClick={handleSafeMode}
-        style={styles.safeModeBtn}
+        className="safe-mode-btn"
         title="Trigger Pre-recorded Demo Safe Mode"
       >
         ⚡ SAFE MODE

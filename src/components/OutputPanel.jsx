@@ -17,12 +17,41 @@ export default function OutputPanel({
   onAcceptFinal,
   onEscalate
 }) {
+  const [flashEmail, setFlashEmail] = React.useState(false);
+  const [flashWhatsapp, setFlashWhatsapp] = React.useState(false);
+  const [flashRateCard, setFlashRateCard] = React.useState(false);
+
+  // Watch for updates to trigger green flash animation
+  React.useEffect(() => {
+    if (emails.length > 0) {
+      setFlashEmail(true);
+      const timer = setTimeout(() => setFlashEmail(false), 1000);
+      return () => clearTimeout(timer);
+    }
+  }, [emails]);
+
+  React.useEffect(() => {
+    if (whatsappMessages.length > 0) {
+      setFlashWhatsapp(true);
+      const timer = setTimeout(() => setFlashWhatsapp(false), 1000);
+      return () => clearTimeout(timer);
+    }
+  }, [whatsappMessages]);
+
+  React.useEffect(() => {
+    if (rateCard) {
+      setFlashRateCard(true);
+      const timer = setTimeout(() => setFlashRateCard(false), 1000);
+      return () => clearTimeout(timer);
+    }
+  }, [rateCard]);
+
   return (
     <div style={styles.container}>
       {/* Scrollable stack of simulator screens */}
       <div style={styles.scrollArea}>
         <div style={styles.stack}>
-          <div className={!rateCard ? 'placeholder-pulse' : 'fade-in-up'}>
+          <div className={`${!rateCard ? 'placeholder-pulse' : 'fade-in-up'} ${flashRateCard ? 'flash-updated' : ''}`}>
             <RateCard
               data={rateCard}
               editMode={editMode}
@@ -30,11 +59,11 @@ export default function OutputPanel({
             />
           </div>
 
-          <div className={emails.length === 0 ? 'placeholder-pulse' : 'fade-in-up'}>
+          <div className={`${emails.length === 0 ? 'placeholder-pulse' : 'fade-in-up'} ${flashEmail ? 'flash-updated' : ''}`}>
             <OutlookSimulator emails={emails} />
           </div>
 
-          <div className={whatsappMessages.length === 0 ? 'placeholder-pulse' : 'fade-in-up'}>
+          <div className={`${whatsappMessages.length === 0 ? 'placeholder-pulse' : 'fade-in-up'} ${flashWhatsapp ? 'flash-updated' : ''}`}>
             <WhatsAppSimulator messages={whatsappMessages} />
           </div>
         </div>

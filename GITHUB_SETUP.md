@@ -1,6 +1,7 @@
 # GitHub Setup Documentation
 
 This document captures the minimal Git workflow we used for the **mactrans-agent** project. Keep it handy for future contributions.
+**Commit frequently.** In the Antigravity terminal: `git add . && git commit -m "phase X: component name"` after each Mission. Every commit auto-deploys to Vercel.
 
 ## Quick Reference
 
