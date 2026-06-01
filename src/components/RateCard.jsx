@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 
 export default function RateCard({ data, editMode, onRecalculate }) {
-  // Local state to manage editable values
   const [values, setValues] = useState({
     base_rate_myr: 0,
     fuel_surcharge_myr: 0,
@@ -10,19 +9,20 @@ export default function RateCard({ data, editMode, onRecalculate }) {
     handling_fee_myr: 0,
   });
 
-  // Sync state with incoming data
+  // Sync editable values whenever new data arrives from Claude
   useEffect(() => {
     if (data) {
       setValues({
         base_rate_myr: Number(data.base_rate_myr || 0),
         fuel_surcharge_myr: Number(data.fuel_surcharge_myr || 0),
-        insurance_fee_myr: Number(data.insurance_fee_myr || 150), // defaults if missing
+        insurance_fee_myr: Number(data.insurance_fee_myr || 150),
         escort_fee_myr: Number(data.escort_fee_myr || 200),
         handling_fee_myr: Number(data.handling_fee_myr || 50),
       });
     }
   }, [data]);
 
+  // ── Awaiting state ──────────────────────────────────────────────────────
   if (!data) {
     return (
       <div className="glass-panel placeholder-pulse" style={styles.placeholderContainer}>
@@ -31,70 +31,83 @@ export default function RateCard({ data, editMode, onRecalculate }) {
     );
   }
 
+  // ── Handlers ────────────────────────────────────────────────────────────
   const handleChange = (field, val) => {
-    setValues((prev) => ({
-      ...prev,
-      [field]: Number(val) || 0,
-    }));
+    setValues(prev => ({ ...prev, [field]: Number(val) || 0 }));
   };
-
-  const totalQuote = 
-    values.base_rate_myr + 
-    values.fuel_surcharge_myr + 
-    values.insurance_fee_myr + 
-    values.escort_fee_myr + 
-    values.handling_fee_myr;
 
   const handleRecalculateClick = () => {
     if (onRecalculate) {
+      // Pass all current line-item values plus the newly computed total
       onRecalculate({
         ...values,
-        total_quote_myr: totalQuote,
+        total_quote_myr: editTotal,
         carrier: data.carrier,
         valid_until: data.valid_until,
       });
     }
   };
 
-  const formatCurrency = (amount) => {
-    return new Intl.NumberFormat('en-MY', {
+  // ── Total calculation ───────────────────────────────────────────────────
+  // Read-only: use the authoritative final_quote from Claude's calculate_quote
+  //            (which includes the discount, so it's lower than the line-item sum).
+  // Edit mode: live sum of whatever the user has typed in.
+  const lineItemSum =
+    values.base_rate_myr +
+    values.fuel_surcharge_myr +
+    values.insurance_fee_myr +
+    values.escort_fee_myr +
+    values.handling_fee_myr;
+
+  const readOnlyTotal = data.total_quote_myr ?? lineItemSum;
+  const editTotal = lineItemSum;
+  const displayTotal = editMode ? editTotal : readOnlyTotal;
+
+  const discountAmount = data.discount_applied_myr || 0;
+
+  // ── Formatting ──────────────────────────────────────────────────────────
+  const fmt = (amount) =>
+    new Intl.NumberFormat('en-MY', {
       style: 'currency',
       currency: 'MYR',
       minimumFractionDigits: 2,
     }).format(amount);
-  };
 
-  const renderRow = (label, field, val) => {
-    return (
-      <tr key={field} style={styles.row}>
-        <td style={styles.labelCell}>{label}</td>
-        <td style={styles.valueCell}>
-          {editMode ? (
-            <div style={styles.inputContainer}>
-              <span style={styles.inputPrefix}>MYR</span>
-              <input
-                type="number"
-                value={val}
-                onChange={(e) => handleChange(field, e.target.value)}
-                style={styles.numberInput}
-              />
-            </div>
-          ) : (
-            <span style={styles.valueText}>{formatCurrency(val)}</span>
-          )}
-        </td>
-      </tr>
-    );
-  };
+  // ── Row renderer ────────────────────────────────────────────────────────
+  const renderRow = (label, field, val) => (
+    <tr key={field} style={styles.row}>
+      <td style={styles.labelCell}>{label}</td>
+      <td style={styles.valueCell}>
+        {editMode ? (
+          <div style={styles.inputContainer}>
+            <span style={styles.inputPrefix}>MYR</span>
+            <input
+              type="number"
+              value={val}
+              onChange={e => handleChange(field, e.target.value)}
+              style={styles.numberInput}
+            />
+          </div>
+        ) : (
+          <span style={styles.valueText}>{fmt(val)}</span>
+        )}
+      </td>
+    </tr>
+  );
 
+  // ── Render ───────────────────────────────────────────────────────────────
   return (
     <div className="glass-panel" style={styles.container}>
+
+      {/* Header */}
       <div style={styles.header}>
         <span style={styles.headerTitle}>⚡ MACTRANS LIVE RATE CARD</span>
         <span style={styles.rfqTag}>#MC-2026-0441</span>
       </div>
 
       <div style={styles.body}>
+
+        {/* Route & carrier info */}
         <div style={styles.infoStrip}>
           <div style={styles.infoCol}>
             <span style={styles.infoLabel}>Route:</span>
@@ -106,42 +119,61 @@ export default function RateCard({ data, editMode, onRecalculate }) {
           </div>
         </div>
 
+        {/* Line items */}
         <table style={styles.table}>
           <tbody>
             {renderRow('Base Freight Rate', 'base_rate_myr', values.base_rate_myr)}
-            {renderRow('Fuel Surcharge', 'fuel_surcharge_myr', values.fuel_surcharge_myr)}
+            {renderRow('Fuel Surcharge (15%)', 'fuel_surcharge_myr', values.fuel_surcharge_myr)}
             {renderRow('Cargo Insurance', 'insurance_fee_myr', values.insurance_fee_myr)}
             {renderRow('Escort Vehicle', 'escort_fee_myr', values.escort_fee_myr)}
             {renderRow('Handling Fee', 'handling_fee_myr', values.handling_fee_myr)}
+
+            {/* Discount row — only visible in read-only mode when a discount exists */}
+            {!editMode && discountAmount > 0 && (
+              <tr style={styles.row}>
+                <td style={{ ...styles.labelCell, color: 'var(--accent-green)', fontStyle: 'italic' }}>
+                  Volume Discount Applied
+                </td>
+                <td style={styles.valueCell}>
+                  <span style={{ ...styles.valueText, color: 'var(--accent-green)' }}>
+                    − {fmt(discountAmount)}
+                  </span>
+                </td>
+              </tr>
+            )}
           </tbody>
         </table>
 
-        <div style={styles.divider}></div>
+        <div style={styles.divider} />
 
+        {/* Total */}
         <div style={styles.totalRow}>
           <span style={styles.totalLabel}>▶ TOTAL QUOTED</span>
-          <span style={styles.totalValue}>{formatCurrency(totalQuote)}</span>
+          <span style={styles.totalValue}>{fmt(displayTotal)}</span>
         </div>
 
+        {/* Footer meta */}
         <div style={styles.footerStrip}>
-          <span>Valid Until: {data.valid_until || '6 Jul 2026'}</span>
-          <span>Margin: {data.margin_pct || '22'}%</span>
+          <span>Valid Until: {data.valid_until || '7 days from quote'}</span>
+          <span>Margin: {data.applied_margin_pct || data.margin_pct || 22}%</span>
         </div>
 
+        {/* Recalculate button — only visible in edit mode */}
         {editMode && (
           <button
             onClick={handleRecalculateClick}
             style={styles.recalcButton}
-            className="pulse-animation"
           >
             🔄 Recalculate &amp; Regenerate Email
           </button>
         )}
+
       </div>
     </div>
   );
 }
 
+// ── Styles ────────────────────────────────────────────────────────────────
 const styles = {
   placeholderContainer: {
     height: '180px',
@@ -302,5 +334,5 @@ const styles = {
     cursor: 'pointer',
     boxShadow: '0 4px 10px rgba(255, 184, 0, 0.2)',
     transition: 'all 0.2s',
-  }
+  },
 };

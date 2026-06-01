@@ -83,7 +83,7 @@ module.exports = async (req, res) => {
 
     while (continueLoop) {
       const response = await anthropic.messages.create({
-        model: "claude-sonnet-4-20250514",
+        model: "claude-haiku-4-5-20251001",
         max_tokens: 3000,
         system: SYSTEM_PROMPT,
         tools: NEGOTIATE_TOOLS,
