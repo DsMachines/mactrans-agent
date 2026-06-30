@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { renderChatHtml } from '../lib/markdownToHtml';
 
 export default function WhatsAppSimulator({ messages = [], canReply = false, isLoading = false, onSendMessage }) {
   const [draft, setDraft] = useState('');
@@ -62,7 +63,7 @@ export default function WhatsAppSimulator({ messages = [], canReply = false, isL
                 }}
               >
                 {!isOutgoing && <div style={styles.senderName}>{msg.sender}</div>}
-                <div style={styles.messageContent}>{msg.content}</div>
+                <div style={styles.messageContent} dangerouslySetInnerHTML={{ __html: renderChatHtml(msg.content) }} />
                 <div style={styles.timestampRow}>
                   <span style={styles.timestamp}>{msg.timestamp || '2:32 PM'}</span>
                   {isOutgoing && <span style={styles.ticks}>✓✓</span>}

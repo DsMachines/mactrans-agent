@@ -30,6 +30,14 @@ export function renderEmailBodyHtml(text) {
     .join('');
 }
 
+// Renders a WhatsApp bubble's text — just inline **bold**/emoji, no block structure.
+// Newlines are left as literal \n; the WhatsApp bubble's CSS already uses
+// white-space: pre-wrap, so line breaks render correctly without converting to <br/>.
+export function renderChatHtml(text) {
+  if (!text) return '';
+  return inlineFormat(text);
+}
+
 // Renders ARIA's spoken narration ("thinking") text for the Agent Terminal. Unlike
 // email bodies, narration sometimes (a) folds in **Step N: ...** markers when the
 // model batches several reasoning beats into one turn, and (b) occasionally tacks the
