@@ -78,12 +78,13 @@ function parseOutputBlocks(text) {
   const emailMatch = text.match(/\[EMAIL_DRAFT\]([\s\S]*?)(\[WHATSAPP_MESSAGE\]|$)/);
   const waMatch = text.match(/\[WHATSAPP_MESSAGE\]([\s\S]*?)$/);
 
-  // Strip stray markdown bolding Claude sometimes wraps around its own section tags
-  // (e.g. "**[EMAIL_DRAFT]**"), which our marker regex doesn't consume.
-  const stripLeadingMarkdown = (s) => (s || '').trim().replace(/^\*+\s*/, '').trim();
+  // Strip stray markdown Claude sometimes wraps around its own section tags
+  // (e.g. "**[EMAIL_DRAFT]**" or a "---" rule right before "**[WHATSAPP_MESSAGE]**"),
+  // which our marker regex captures as part of the surrounding text but doesn't consume.
+  const cleanMarkdownEdges = (s) => (s || '').trim().replace(/^\*+\s*/, '').replace(/[\s\-*]+$/, '').trim();
 
-  const emailBody = emailMatch ? stripLeadingMarkdown(emailMatch[1]) : null;
-  const waBody = waMatch ? stripLeadingMarkdown(waMatch[1]) : null;
+  const emailBody = emailMatch ? cleanMarkdownEdges(emailMatch[1]) : null;
+  const waBody = waMatch ? cleanMarkdownEdges(waMatch[1]) : null;
 
   return { emailBody, waBody };
 }

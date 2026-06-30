@@ -178,12 +178,13 @@ function parseOutputBlocks(text) {
   const emailMatch = text.match(/\[EMAIL_DRAFT\]([\s\S]*?)(\[WHATSAPP_MESSAGE\]|$)/);
   const waMatch = text.match(/\[WHATSAPP_MESSAGE\]([\s\S]*?)$/);
 
-  // Strip stray markdown bolding Claude sometimes wraps around its own section tags
-  // (e.g. "**[EMAIL_DRAFT]**"), which our marker regex doesn't consume.
-  const stripLeadingMarkdown = (s) => (s || '').trim().replace(/^\*+\s*/, '').trim();
+  // Strip stray markdown Claude sometimes wraps around its own section tags
+  // (e.g. "**[EMAIL_DRAFT]**" or a "---" rule right before "**[WHATSAPP_MESSAGE]**"),
+  // which our marker regex captures as part of the surrounding text but doesn't consume.
+  const cleanMarkdownEdges = (s) => (s || '').trim().replace(/^\*+\s*/, '').replace(/[\s\-*]+$/, '').trim();
 
-  const emailBody = emailMatch ? stripLeadingMarkdown(emailMatch[1]) : null;
-  const waBody = waMatch ? stripLeadingMarkdown(waMatch[1]) : null;
+  const emailBody = emailMatch ? cleanMarkdownEdges(emailMatch[1]) : null;
+  const waBody = waMatch ? cleanMarkdownEdges(waMatch[1]) : null;
 
   return { emailBody, waBody };
 }
@@ -215,14 +216,107 @@ module.exports = async (req, res) => {
     apiKey: process.env.ANTHROPIC_API_KEY,
   });
 
+  // ── Dedicated path: regenerate_email mode ───────────────────────────────
+  // This is a pure text-redraft task with fixed, already-known numbers — it needs no tool
+  // use at all. Routing it through the same 11-tool agentic loop as a fresh RFQ let Claude
+  // wander off and recompute its own (wrong) figures instead of using the admin's edits,
+  // and left quoteData (and therefore the pending_action's quote_snapshot) null since no
+  // calculate_quote call happened in this isolated, stateless request — breaking the
+  // WhatsApp admin-chat's context on every subsequent message. A single, tightly-scoped,
+  // tool-free call with the exact figures spelled out avoids both problems.
+  if (mode === "regenerate_email" && amended_values) {
+    try {
+      const lineItems = [
+        `- Base Freight Rate: MYR ${amended_values.base_rate_myr}`,
+        `- Fuel Surcharge: MYR ${amended_values.fuel_surcharge_myr}`,
+        `- Cargo Insurance: MYR ${amended_values.insurance_fee_myr}`,
+        `- Escort Vehicle: MYR ${amended_values.escort_fee_myr}`,
+        `- Handling: MYR ${amended_values.handling_fee_myr}`,
+        amended_values.weather_contingency_myr ? `- Weather Contingency: MYR ${amended_values.weather_contingency_myr}` : null,
+        amended_values.discount_applied_myr ? `- Discount: − MYR ${amended_values.discount_applied_myr}` : null,
+      ].filter(Boolean).join("\n");
+
+      const regenPrompt = `The sales admin has manually amended the quote for RFQ #MC-2026-0441 (client: Ahmad Farouk, Global Construct Sdn Bhd; cargo: CNC milling machines, 12,000kg, Cheras Industrial Zone KL to Penang Port, Butterworth; carrier: ${amended_values.carrier || "Trans-Peninsular Express Sdn Bhd"}).\n\nUse EXACTLY these figures — do not recalculate, do not call any tools, do not change any number:\n${lineItems}\n- TOTAL: MYR ${amended_values.total_quote_myr}\n- Valid Until: ${amended_values.valid_until}\n\nDraft a client email and a WhatsApp approval request asking the admin to approve sending this amended quote. Use the standard [EMAIL_DRAFT]/[WHATSAPP_MESSAGE] markers, and format the line items as a simple dash-bulleted list (not a markdown table) to match the existing style. The email is a DRAFT pending admin approval — do not say it has been sent.`;
+
+      const response = await anthropic.messages.create({
+        model: "claude-haiku-4-5-20251001",
+        max_tokens: 2000,
+        system: SYSTEM_PROMPT,
+        messages: [{ role: "user", content: regenPrompt }],
+      });
+
+      const text = response.content.filter((b) => b.type === "text").map((b) => b.text).join("\n");
+      const { emailBody, waBody } = parseOutputBlocks(text);
+      const quoteData = amended_values; // authoritative — these are the admin's own edited figures
+
+      sendEvent(res, {
+        type: "rate_card",
+        data: {
+          base_rate_myr: quoteData.base_rate_myr,
+          fuel_surcharge_myr: quoteData.fuel_surcharge_myr,
+          insurance_fee_myr: quoteData.insurance_fee_myr,
+          escort_fee_myr: quoteData.escort_fee_myr,
+          handling_fee_myr: quoteData.handling_fee_myr,
+          weather_contingency_myr: quoteData.weather_contingency_myr,
+          discount_applied_myr: quoteData.discount_applied_myr,
+          total_quote_myr: quoteData.total_quote_myr,
+          minimum_acceptable_myr: quoteData.minimum_acceptable_myr ?? Math.round((quoteData.total_quote_myr * 0.9) / 2) * 2,
+          currency: "MYR",
+          valid_until: quoteData.valid_until,
+          carrier: quoteData.carrier || "Trans-Peninsular Express Sdn Bhd",
+        },
+      });
+
+      let emailRef = null;
+      if (emailBody) {
+        emailRef = "email-1";
+        sendEvent(res, {
+          type: "email_draft",
+          email_ref: emailRef,
+          from: "aria@mactrans.com.my",
+          from_name: "ARIA — Mactrans Logistics",
+          to: "procurement@globalconstruct.com.my",
+          to_name: "Ahmad Farouk, Global Construct Sdn Bhd",
+          subject: "RE: RFQ #MC-2026-0441 — Freight Quotation: KL to Penang Port",
+          timestamp: new Date().toLocaleString("en-MY", { timeZone: "Asia/Kuala_Lumpur", day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }),
+          body: emailBody,
+        });
+      }
+
+      if (waBody) {
+        sendEvent(res, {
+          type: "whatsapp_msg",
+          sender: "ARIA Bot",
+          avatar_initials: "AB",
+          timestamp: new Date().toLocaleTimeString("en-MY", { timeZone: "Asia/Kuala_Lumpur", hour: "2-digit", minute: "2-digit" }),
+          content: waBody,
+        });
+      }
+
+      if (emailBody && emailRef) {
+        sendEvent(res, {
+          type: "pending_action",
+          action_id: `act-${Date.now()}`,
+          action_type: "send_amended_quote_email",
+          summary: `Send amended quote to Ahmad Farouk for MYR ${quoteData.total_quote_myr}, valid until ${quoteData.valid_until}?`,
+          email_ref: emailRef,
+          whatsapp_prompt: waBody || "Boss, amended quote's ready — approve to send?",
+          quote_snapshot: quoteData,
+        });
+      }
+
+      sendEvent(res, { type: "done" });
+    } catch (err) {
+      console.error("ARIA agent regenerate_email error:", err);
+      sendEvent(res, { type: "error", message: err.message || "Unexpected error regenerating the email." });
+    }
+    res.end();
+    return;
+  }
+
   try {
     // ── Build initial message ──────────────────────────────────────────────
-    let userMessage;
-    if (mode === "regenerate_email" && amended_values) {
-      userMessage = `The quote has been manually amended by the operations team. Please regenerate ONLY the client email draft and the WhatsApp approval request using the following updated values:\n\n${JSON.stringify(amended_values, null, 2)}\n\nUse the same client and RFQ details from the previous run (Ahmad Farouk, Global Construct, RFQ #MC-2026-0441). Remember the email is still a DRAFT pending admin approval — do not say it has been sent.`;
-    } else {
-      userMessage = `Please process this incoming RFQ:\n\n${rfq_text}`;
-    }
+    const userMessage = `Please process this incoming RFQ:\n\n${rfq_text}`;
 
     const messages = [{ role: "user", content: userMessage }];
 
@@ -323,7 +417,7 @@ module.exports = async (req, res) => {
               sendEvent(res, {
                 type: "pending_action",
                 action_id: `act-${Date.now()}`,
-                action_type: mode === "regenerate_email" ? "send_amended_quote_email" : "send_quote_email",
+                action_type: "send_quote_email",
                 summary: quoteData
                   ? `Send quotation email to Ahmad Farouk for MYR ${quoteData.final_quote_myr}, valid until ${quoteData.valid_until}?`
                   : "Send the drafted quotation email to the client?",
