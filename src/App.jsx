@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import InputMatrix from './components/InputMatrix';
 import AgentTerminal from './components/AgentTerminal';
 import OutputPanel from './components/OutputPanel';
-import { DEFAULT_RFQ } from './data/defaultRfq';
+import { DEFAULT_RFQ, DEFAULT_CLIENT_INFO } from './data/defaultRfq';
 import {
   FALLBACK_EVENTS, PLAYBACK_DELAYS_MS,
   FALLBACK_NEGOTIATION_EVENTS, NEGOTIATION_PLAYBACK_DELAYS_MS,
@@ -21,6 +21,7 @@ export default function App() {
   const [rfqText, setRfqText] = useState(DEFAULT_RFQ);
   const [terminalLines, setTerminalLines] = useState([]);
   const [rateCard, setRateCard] = useState(null);
+  const [clientInfo, setClientInfoState] = useState(null); // real extracted identity for this run; null = use DEFAULT_CLIENT_INFO
   const [emails, setEmails] = useState([]);
   const [whatsappMessages, setWhatsappMessages] = useState([]);
   const [negotiationResult, setNegotiationResultState] = useState(null);
@@ -59,6 +60,10 @@ export default function App() {
     setWhatsappMessages(prev => [...prev, { id: `wa-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, ...msg }]);
   };
 
+  // Real extracted identity for this run, falling back to the canned demo identity
+  // whenever nothing's been deployed yet (Safe Mode, or a simulator button clicked early).
+  const effectiveClient = clientInfo || DEFAULT_CLIENT_INFO;
+
   // Dispatchers setup for sseParser
   const dispatchers = {
     addTerminalLine: (line) => {
@@ -66,6 +71,16 @@ export default function App() {
     },
     setRateCard: (data) => {
       setRateCard(data);
+    },
+    setClientInfo: (event) => {
+      setClientInfoState({
+        rfq_id: event.rfq_id,
+        client_name: event.client_name,
+        contact_person: event.contact_person,
+        contact_email: event.contact_email,
+        origin: event.origin,
+        destination: event.destination,
+      });
     },
     setEmail: (event) => {
       const id = event.email_ref || 'email-1';
@@ -97,11 +112,11 @@ export default function App() {
 
       const clientEmail = {
         id: 'email-client-counter',
-        from: 'procurement@globalconstruct.com.my',
-        from_name: 'Ahmad Farouk',
+        from: effectiveClient.contact_email,
+        from_name: effectiveClient.contact_person,
         to: 'quotes@mactrans.com.my',
         to_name: 'ARIA Agent',
-        subject: 'RE: RFQ #MC-2026-0441',
+        subject: `RE: RFQ #${effectiveClient.rfq_id}`,
         timestamp: nowMY({ day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }),
         body: `Hi, thanks for the quote. MYR 3,880 is a bit high for us.\nCan you do MYR 3,400? That would work for our budget.`,
         isCounterOffer: true,
@@ -112,9 +127,9 @@ export default function App() {
         id: 'email-negotiation-reply',
         from: 'aria@mactrans.com.my',
         from_name: 'ARIA — Mactrans Logistics',
-        to: 'procurement@globalconstruct.com.my',
-        to_name: 'Ahmad Farouk, Global Construct Sdn Bhd',
-        subject: 'RE: RFQ #MC-2026-0441 — Freight Quotation: KL to Penang Port',
+        to: effectiveClient.contact_email,
+        to_name: `${effectiveClient.contact_person}, ${effectiveClient.client_name}`,
+        subject: `RE: RFQ #${effectiveClient.rfq_id} — Freight Quotation: ${effectiveClient.origin} to ${effectiveClient.destination}`,
         timestamp: nowMY({ day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }),
         body: event.counter_email_body,
         isCounterOffer: false,
@@ -137,9 +152,9 @@ export default function App() {
         id: 'email-alternate-offer',
         from: 'aria@mactrans.com.my',
         from_name: 'ARIA — Mactrans Logistics',
-        to: 'procurement@globalconstruct.com.my',
-        to_name: 'Ahmad Farouk, Global Construct Sdn Bhd',
-        subject: 'RE: RFQ #MC-2026-0441 — Alternate Ship Date Offer',
+        to: effectiveClient.contact_email,
+        to_name: `${effectiveClient.contact_person}, ${effectiveClient.client_name}`,
+        subject: `RE: RFQ #${effectiveClient.rfq_id} — Alternate Ship Date Offer`,
         timestamp: nowMY({ day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }),
         body: event.counter_email_body,
         isCounterOffer: false,
@@ -236,6 +251,7 @@ export default function App() {
     setAlternateOfferState(null);
     setPendingApprovalState(null);
     setAdminChatHistory([]);
+    setClientInfoState(null);
     setIsDone(false);
     setIsStreaming(true);
     setError(null);
@@ -279,6 +295,7 @@ export default function App() {
     setAlternateOfferState(null);
     setPendingApprovalState(null);
     setAdminChatHistory([]);
+    setClientInfoState(null);
     setIsDone(false);
     setIsStreaming(true);
     setError(null);
@@ -358,6 +375,18 @@ export default function App() {
         return;
       }
 
+      // Carry the real identity/route through so the regenerated email/rate_card stay
+      // consistent with whatever was actually extracted in the original Deploy run.
+      const enrichedValues = {
+        ...amendedValues,
+        contact_person: effectiveClient.contact_person,
+        contact_email: effectiveClient.contact_email,
+        client_name: effectiveClient.client_name,
+        client_rfq_id: rateCard?.client_rfq_id || effectiveClient.rfq_id,
+        route_label: rateCard?.route_label || `${effectiveClient.origin} to ${effectiveClient.destination}`,
+        route_distance_km: rateCard?.route_distance_km,
+      };
+
       const response = await fetch('/api/agent', {
         method: 'POST',
         headers: {
@@ -365,7 +394,7 @@ export default function App() {
         },
         body: JSON.stringify({
           mode: 'regenerate_email',
-          amended_values: amendedValues
+          amended_values: enrichedValues
         })
       });
 
@@ -386,11 +415,11 @@ export default function App() {
 
     const clientCounterOffer = {
       id: 'email-client-counter',
-      from: 'procurement@globalconstruct.com.my',
-      from_name: 'Ahmad Farouk',
+      from: effectiveClient.contact_email,
+      from_name: effectiveClient.contact_person,
       to: 'quotes@mactrans.com.my',
       to_name: 'ARIA Agent',
-      subject: 'RE: RFQ #MC-2026-0441',
+      subject: `RE: RFQ #${effectiveClient.rfq_id}`,
       timestamp: nowMY({ day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }),
       body: `Hi, thanks for the quote. MYR ${rateCard?.total_quote_myr || 3880} is a bit high for us.\nCan you do MYR 3,400? That would work for our budget.`,
       isCounterOffer: true,
@@ -406,7 +435,7 @@ export default function App() {
 
     dispatchers.addTerminalLine({
       type: 'thinking',
-      content: `Ahmad Farouk has submitted a counter-proposal of MYR 3,400 against our quote of MYR ${rateCard?.total_quote_myr || 3880}.\nI will now analyze this counter-offer against our 10% maximum discount floor of MYR ${rateCard?.minimum_acceptable_myr || 3492}.`
+      content: `${effectiveClient.contact_person} has submitted a counter-proposal of MYR 3,400 against our quote of MYR ${rateCard?.total_quote_myr || 3880}.\nI will now analyze this counter-offer against our 10% maximum discount floor of MYR ${rateCard?.minimum_acceptable_myr || 3492}.`
     });
 
     try {
@@ -424,8 +453,8 @@ export default function App() {
           original_quote_myr: rateCard?.total_quote_myr || 3880,
           minimum_acceptable_myr: rateCard?.minimum_acceptable_myr || 3492,
           counter_offer_myr: 3400,
-          client_name: 'Ahmad Farouk',
-          rfq_id: 'MC-2026-0441'
+          client_name: effectiveClient.contact_person,
+          rfq_id: effectiveClient.rfq_id
         })
       });
 
@@ -451,7 +480,7 @@ export default function App() {
     });
     dispatchers.addTerminalLine({
       type: 'thinking',
-      content: `Ahmad Farouk is asking for an even better price than our approved counter of MYR ${rateCard?.minimum_acceptable_myr || 3492}. Let me check if a different ship date opens up a genuinely cheaper window.`
+      content: `${effectiveClient.contact_person} is asking for an even better price than our approved counter of MYR ${rateCard?.minimum_acceptable_myr || 3492}. Let me check if a different ship date opens up a genuinely cheaper window.`
     });
 
     try {
@@ -470,8 +499,8 @@ export default function App() {
           original_quote_myr: rateCard?.total_quote_myr || 3880,
           minimum_acceptable_myr: rateCard?.minimum_acceptable_myr || 3492,
           counter_offer_myr: 3300,
-          client_name: 'Ahmad Farouk',
-          rfq_id: 'MC-2026-0441',
+          client_name: effectiveClient.contact_person,
+          rfq_id: effectiveClient.rfq_id,
           base_rate_myr: rateCard?.base_rate_myr,
           fuel_surcharge_pct: 15,
           has_insurance: true,
@@ -660,7 +689,7 @@ export default function App() {
                 <p style={styles.modalText}>
                   Booking requests have been successfully dispatched to <strong>Trans-Peninsular Express Sdn Bhd</strong>.
                   <br />
-                  A confirmation email has been routed to Ahmad Farouk (procurement@globalconstruct.com.my).
+                  A confirmation email has been routed to {effectiveClient.contact_person} ({effectiveClient.contact_email}).
                 </p>
               </div>
             ) : (
@@ -668,7 +697,7 @@ export default function App() {
                 <div style={{ ...styles.modalIcon, color: 'var(--accent-amber)' }}>!</div>
                 <h3 style={styles.modalTitle}>Case Escalated</h3>
                 <p style={styles.modalText}>
-                  Case #MC-2026-0441 has been escalated to the Operations Manager.
+                  Case #{effectiveClient.rfq_id} has been escalated to the Operations Manager.
                   <br />
                   Internal dashboard ticket #TKT-2026-8910 has been opened for manual override.
                 </p>

@@ -15,6 +15,9 @@ export function routeEvent(event, dispatchers) {
     case 'email_draft':
       dispatchers.setEmail(event);
       break;
+    case 'client_info':
+      dispatchers.setClientInfo(event);
+      break;
     case 'whatsapp_msg':
       dispatchers.setWhatsapp(event);
       break;

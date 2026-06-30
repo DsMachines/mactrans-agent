@@ -24,3 +24,14 @@ Ahmad Farouk
 Procurement Manager
 Global Construct Sdn Bhd
 Tel: +60 12-XXX XXXX`;
+
+// Fallback client identity used wherever the real extracted identity isn't available
+// yet (Safe Mode, or a negotiation-simulator button clicked with nothing deployed).
+export const DEFAULT_CLIENT_INFO = {
+  rfq_id: 'MC-2026-0441',
+  client_name: 'Global Construct Sdn Bhd',
+  contact_person: 'Ahmad Farouk',
+  contact_email: 'procurement@globalconstruct.com.my',
+  origin: 'Kuala Lumpur',
+  destination: 'Penang Port',
+};

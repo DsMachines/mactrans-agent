@@ -112,7 +112,7 @@ export default function RateCard({ data, editMode, onRecalculate }) {
       {/* Header */}
       <div style={styles.header}>
         <span style={styles.headerTitle}>⚡ MACTRANS LIVE RATE CARD</span>
-        <span style={styles.rfqTag}>#MC-2026-0441</span>
+        <span style={styles.rfqTag}>#{data.client_rfq_id || 'MC-2026-0441'}</span>
       </div>
 
       <div style={styles.body}>
@@ -121,7 +121,7 @@ export default function RateCard({ data, editMode, onRecalculate }) {
         <div style={styles.infoStrip}>
           <div style={styles.infoCol}>
             <span style={styles.infoLabel}>Route:</span>
-            <span style={styles.infoValue}>Kuala Lumpur → Penang Port (370 km)</span>
+            <span style={styles.infoValue}>{data.route_label ? `${data.route_label}${data.route_distance_km ? ` (${data.route_distance_km} km)` : ''}` : 'Kuala Lumpur → Penang Port (370 km)'}</span>
           </div>
           <div style={styles.infoCol}>
             <span style={styles.infoLabel}>Carrier:</span>
