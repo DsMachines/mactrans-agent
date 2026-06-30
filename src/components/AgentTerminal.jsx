@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { getToolMeta } from '../data/toolMeta';
+import { renderNarrationHtml } from '../lib/markdownToHtml';
 
 // Walks raw terminalLines and merges an adjacent tool_call + matching tool_response
 // (same name, immediately following — true for every real event source: api/agent.js
@@ -94,7 +95,7 @@ function ToolStepCard({ step, stepNumber }) {
 function ThinkingRow({ content }) {
   return (
     <TimelineRow icon="🧠">
-      <div style={styles.thinkingText}>{content}</div>
+      <div style={styles.thinkingText} dangerouslySetInnerHTML={{ __html: renderNarrationHtml(content) }} />
     </TimelineRow>
   );
 }
