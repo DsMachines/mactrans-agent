@@ -263,11 +263,53 @@ call, but ends with a different marker:
 
 | Capability | Status | Notes |
 |---|---|---|
-| **Google Maps Distance Matrix** | Built, **not yet activated** | `get_distance_real()` in `api/lib/mockTools.js` makes one real `GET https://maps.googleapis.com/maps/api/distancematrix/json` call (hub→origin→destination→hub in a single request) when `GOOGLE_MAPS_API_KEY` is set in the environment. **As of this doc, that key is NOT present in `.env` or confirmed in Vercel's project settings** — the user deferred this ("I'll handle it later"). Until it's set, every run silently uses the deterministic fallback (`internal_estimation_model`), which is narration-identical (the system prompt forbids ever mentioning "Maps," "API," or "fallback"). **To activate**: create a Google Cloud project → enable Distance Matrix API → create + restrict an API key → add `GOOGLE_MAPS_API_KEY` to local `.env` AND to Vercel → Project Settings → Environment Variables → redeploy. No code changes needed. |
-| **Weather forecast** | Fully simulated, by design | `get_weather_forecast()` deterministically (hash of date+region, not random) picks from a fixed pool of Malaysia-appropriate seasonal conditions (`WEATHER_PATTERNS` in `mockTools.js`). This was **never meant to be real** per the original request — the client explicitly only wanted Google Maps as the real integration. **This is the natural next candidate if a second real integration is ever wanted** — e.g. a real weather API (OpenWeatherMap, WeatherAPI, etc.) keyed off `ship_date`/`destination_region`, with the same kind of deterministic, narration-identical fallback pattern already proven out for distance. |
+| **Google Maps Distance Matrix** | Built, **not yet activated** | `get_distance_real()` in `api/lib/mockTools.js` makes one real `GET .../distancematrix/json` call when `GOOGLE_MAPS_API_KEY` is set. **Key not present yet** — until it is, every run silently uses the deterministic fallback (narration-identical; the system prompt forbids ever mentioning "Maps," "API," or "fallback"). No code changes needed to activate — see setup checklist below. |
+| **Weather forecast** | Fully simulated, by design | `get_weather_forecast()` deterministically (hash of date+region, not random) picks from a fixed pool of seasonal conditions (`WEATHER_PATTERNS`). Never meant to be real per the original request. If activated, unlike Maps this needs **new code, not just a key** — see setup checklist below. |
 | Route incident log | Simulated (fixed 5-entry dataset) | Not a candidate for "real" — there's no real backing data source for this in the original request. |
 | Fleet/engine-management status | Simulated (fixed 4-truck dataset) | Same — no real data source intended. |
 | Admin-chat decision interpretation | **Real** | Genuine Claude call, freeform — this was always meant to be real, not a fallback candidate. |
+
+**Decision: REST API calls, not MCP, for any future real integration.** MCP means
+running and connecting to a separate server process from inside a Vercel serverless
+function — extra cold-start latency and an extra failure point with no upside here.
+The existing pattern (`get_distance_real`) already gets full live-demo reliability
+from one timed HTTP call with a deterministic, narration-identical fallback — that's
+the model to copy, not MCP.
+
+### Setup checklist for activating real integrations (for whoever picks this up next)
+
+No Claude Code tool can create an account, accept billing terms, or generate an API
+key on the user's behalf — this section exists so a human (or a future session
+guiding one) has everything needed without re-deriving it.
+
+**Google Maps Distance Matrix** (code already done, just needs a key):
+1. Google Cloud Console → create/select a project → enable billing (Distance Matrix
+   has a free $200/month credit, but a card must be on file).
+2. APIs & Services → Library → search "Distance Matrix API" → Enable.
+3. APIs & Services → Credentials → Create Credentials → API Key.
+4. Restrict it: API restrictions → limit the key to "Distance Matrix API" only (Vercel
+   has no static outbound IP, so IP-restriction isn't practical — API-restriction is
+   the meaningful guard against a leaked key).
+5. Add `GOOGLE_MAPS_API_KEY=<key>` to local `.env` AND Vercel → Project Settings →
+   Environment Variables (Production + Preview) → redeploy.
+
+**Weather** (needs real code, not just a key — `get_weather_forecast()` has no
+real-call attempt at all today, unlike `get_distance_real`):
+1. Recommended provider: **OpenWeatherMap**'s free-tier 5-day/3-hour Forecast API
+   (`api.openweathermap.org/data/2.5/forecast`) — no billing card required on the
+   free plan, unlike their One Call API 3.0. Sign up → API keys tab → generate (can
+   take up to ~1hr to activate).
+2. Add `OPENWEATHER_API_KEY` to local `.env` AND Vercel env vars.
+3. Code change: give `get_weather_forecast()` the same try-real/fallback shape
+   `get_distance_real()` already has — timed fetch for the destination region, parse
+   the matching date's conditions, fall back to the existing `WEATHER_PATTERNS`
+   simulation (same narration either way) on any failure.
+4. **Constraint to design around**: no real weather API forecasts accurately beyond
+   ~5-7 days — a meteorological limit, not an integration gap. This demo's ship dates
+   are often quoted further out than that, so the simulated seasonal-pattern path
+   will likely remain the primary path most of the time even after this is
+   "activated" — which conveniently matches the original request's own framing
+   ("predict from seasonal historical patterns" when no real forecast is available).
 
 ## 9. File map
 
