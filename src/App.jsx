@@ -505,6 +505,8 @@ export default function App() {
     setAdminChatHistory(prev => [...prev, { role: 'admin', content: trimmed }]);
     setIsAdminChatLoading(true);
 
+    const refEmail = emails.find(e => e.id === pendingApproval?.email_ref);
+
     try {
       const response = await fetch('/api/admin-chat', {
         method: 'POST',
@@ -513,6 +515,8 @@ export default function App() {
           pending_action: pendingApproval,
           admin_message: trimmed,
           chat_history: historyForRequest,
+          client_name: refEmail?.to_name || 'the client',
+          original_email_body: refEmail?.body || null,
         }),
       });
 
@@ -523,7 +527,42 @@ export default function App() {
 
       if (data.decision === 'approve' && pendingApproval?.email_ref) {
         const ref = pendingApproval.email_ref;
-        setEmails(prev => prev.map(e => (e.id === ref ? { ...e, status: 'sent' } : e)));
+        const actionType = pendingApproval.action_type;
+        const isNegotiationAction = actionType === 'send_negotiation_reply' || actionType === 'send_alternate_offer';
+
+        // Admin gave a new price via chat (e.g. "adjust to rm3500 and send it") — the backend
+        // already redrafted the email/quote with that figure; apply it before marking sent so
+        // the email actually reflects the chat instruction instead of the stale earlier draft.
+        if (data.revised) {
+          setEmails(prev => prev.map(e => (e.id === ref ? { ...e, body: data.revised.email_body || e.body, status: 'sent' } : e)));
+        } else {
+          setEmails(prev => prev.map(e => (e.id === ref ? { ...e, status: 'sent' } : e)));
+        }
+
+        // The Rate Card is the one persistent "what's the current quote" display — keep it in
+        // sync with whatever price was actually just sent, so it doesn't keep showing the
+        // original quote total after a counter-offer/alternate-offer goes out (with or without
+        // a chat-driven number override).
+        if (isNegotiationAction) {
+          const snapshot = pendingApproval.quote_snapshot || {};
+          const finalPrice = data.revised
+            ? data.revised.quote_snapshot.final_offer_myr
+            : (snapshot.final_offer_myr ?? snapshot.final_quote_myr);
+          if (finalPrice != null) {
+            dispatchers.setRateCard(prev => {
+              if (!prev) return prev;
+              // A negotiation counter only ever raises the floor (admin overriding upward via
+              // chat); an alternate-date offer is *designed* to land below the prior floor via
+              // a genuinely cheaper window, so it should replace the floor outright, not be
+              // clamped above it.
+              const newFloor = actionType === 'send_alternate_offer'
+                ? finalPrice
+                : Math.max(prev.minimum_acceptable_myr || 0, finalPrice);
+              return { ...prev, total_quote_myr: finalPrice, minimum_acceptable_myr: newFloor };
+            });
+          }
+        }
+
         setPendingApprovalState(null);
       }
       // reject/clarify: keep pendingApproval as-is, conversation continues

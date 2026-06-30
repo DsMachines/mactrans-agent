@@ -1,4 +1,5 @@
 import React from 'react';
+import { renderEmailBodyHtml } from '../lib/markdownToHtml';
 
 export default function OutlookSimulator({ emails = [] }) {
   if (!emails || emails.length === 0) {
@@ -76,9 +77,10 @@ export default function OutlookSimulator({ emails = [] }) {
 
               <div style={styles.divider}></div>
 
-              <div style={styles.emailBody}>
-                {email.body}
-              </div>
+              <div
+                style={styles.emailBody}
+                dangerouslySetInnerHTML={{ __html: renderEmailBodyHtml(email.body) }}
+              />
 
               {/* Action buttons */}
               <div style={styles.emailActions}>
