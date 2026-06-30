@@ -11,16 +11,25 @@ const TOOL_DEFINITIONS = [
   {
     name: "extract_rfq_data",
     description:
-      "Extracts structured cargo data from a raw, unformatted RFQ or logistics manifest text.",
+      "Records the structured cargo/routing/client data YOU have extracted by carefully reading the raw RFQ text. Pass the exact values you found in the email — do not invent or reuse example values from a prior run; if a field is genuinely not stated, make your best reasonable inference and reflect that in parsed_confidence.",
     input_schema: {
       type: "object",
       properties: {
-        raw_text: {
-          type: "string",
-          description: "The unformatted RFQ text to parse",
-        },
+        rfq_id: { type: "string", description: "Reference number from the email if present" },
+        client_name: { type: "string", description: "Client company name" },
+        contact_person: { type: "string", description: "Sender's name" },
+        contact_email: { type: "string", description: "Sender's email address" },
+        cargo_type: { type: "string" },
+        cargo_description: { type: "string" },
+        weight_kg: { type: "number" },
+        dimensions_m3: { type: "number" },
+        origin: { type: "string" },
+        destination: { type: "string" },
+        required_by_date: { type: "string", description: "YYYY-MM-DD" },
+        special_requirements: { type: "array", items: { type: "string" } },
+        parsed_confidence: { type: "string", enum: ["high", "medium", "low"] },
       },
-      required: ["raw_text"],
+      required: ["client_name", "contact_person", "contact_email", "origin", "destination", "weight_kg"],
     },
   },
   {
@@ -125,6 +134,7 @@ const TOOL_DEFINITIONS = [
         route_id: { type: "string" },
         cargo_type: { type: "string" },
         weight_kg: { type: "number" },
+        distance_km: { type: "number", description: "Real route distance from get_route, used to scale the benchmark" },
       },
       required: ["route_id", "cargo_type", "weight_kg"],
     },
@@ -236,7 +246,7 @@ module.exports = async (req, res) => {
         amended_values.discount_applied_myr ? `- Discount: − MYR ${amended_values.discount_applied_myr}` : null,
       ].filter(Boolean).join("\n");
 
-      const regenPrompt = `The sales admin has manually amended the quote for RFQ #MC-2026-0441 (client: Ahmad Farouk, Global Construct Sdn Bhd; cargo: CNC milling machines, 12,000kg, Cheras Industrial Zone KL to Penang Port, Butterworth; carrier: ${amended_values.carrier || "Trans-Peninsular Express Sdn Bhd"}).\n\nUse EXACTLY these figures — do not recalculate, do not call any tools, do not change any number:\n${lineItems}\n- TOTAL: MYR ${amended_values.total_quote_myr}\n- Valid Until: ${amended_values.valid_until}\n\nDraft a client email and a WhatsApp approval request asking the admin to approve sending this amended quote. Use the standard [EMAIL_DRAFT]/[WHATSAPP_MESSAGE] markers, and format the line items as a simple dash-bulleted list (not a markdown table) to match the existing style. The email is a DRAFT pending admin approval — do not say it has been sent.`;
+      const regenPrompt = `The sales admin has manually amended the quote for RFQ #${amended_values.client_rfq_id || 'MC-2026-0441'} (client: ${amended_values.contact_person || 'Ahmad Farouk'}, ${amended_values.client_name || 'Global Construct Sdn Bhd'}; route: ${amended_values.route_label || 'Cheras Industrial Zone KL to Penang Port, Butterworth'}; carrier: ${amended_values.carrier || "Trans-Peninsular Express Sdn Bhd"}).\n\nUse EXACTLY these figures — do not recalculate, do not call any tools, do not change any number:\n${lineItems}\n- TOTAL: MYR ${amended_values.total_quote_myr}\n- Valid Until: ${amended_values.valid_until}\n\nDraft a client email and a WhatsApp approval request asking the admin to approve sending this amended quote. Use the standard [EMAIL_DRAFT]/[WHATSAPP_MESSAGE] markers, and format the line items as a simple dash-bulleted list (not a markdown table) to match the existing style. The email is a DRAFT pending admin approval — do not say it has been sent.`;
 
       const response = await anthropic.messages.create({
         model: "claude-haiku-4-5-20251001",
@@ -264,6 +274,9 @@ module.exports = async (req, res) => {
           currency: "MYR",
           valid_until: quoteData.valid_until,
           carrier: quoteData.carrier || "Trans-Peninsular Express Sdn Bhd",
+          client_rfq_id: quoteData.client_rfq_id || null,
+          route_label: quoteData.route_label || null,
+          route_distance_km: quoteData.route_distance_km || null,
         },
       });
 
@@ -275,9 +288,9 @@ module.exports = async (req, res) => {
           email_ref: emailRef,
           from: "aria@mactrans.com.my",
           from_name: "ARIA — Mactrans Logistics",
-          to: "procurement@globalconstruct.com.my",
-          to_name: "Ahmad Farouk, Global Construct Sdn Bhd",
-          subject: "RE: RFQ #MC-2026-0441 — Freight Quotation: KL to Penang Port",
+          to: amended_values.contact_email || "procurement@globalconstruct.com.my",
+          to_name: amended_values.contact_person ? `${amended_values.contact_person}, ${amended_values.client_name}` : "Ahmad Farouk, Global Construct Sdn Bhd",
+          subject: `RE: RFQ #${amended_values.client_rfq_id || 'MC-2026-0441'} — Freight Quotation: ${amended_values.route_label || 'KL to Penang Port'}`,
           timestamp: new Date().toLocaleString("en-MY", { timeZone: "Asia/Kuala_Lumpur", day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }),
           body: emailBody,
         });
@@ -298,7 +311,7 @@ module.exports = async (req, res) => {
           type: "pending_action",
           action_id: `act-${Date.now()}`,
           action_type: "send_amended_quote_email",
-          summary: `Send amended quote to Ahmad Farouk for MYR ${quoteData.total_quote_myr}, valid until ${quoteData.valid_until}?`,
+          summary: `Send amended quote to ${amended_values.contact_person || 'Ahmad Farouk'} for MYR ${quoteData.total_quote_myr}, valid until ${quoteData.valid_until}?`,
           email_ref: emailRef,
           whatsapp_prompt: waBody || "Boss, amended quote's ready — approve to send?",
           quote_snapshot: quoteData,
@@ -323,6 +336,8 @@ module.exports = async (req, res) => {
     // ── Agentic loop ───────────────────────────────────────────────────────
     let continueLoop = true;
     let quoteData = null; // Captured from calculate_quote tool result
+    let extractedData = null; // Captured from extract_rfq_data tool result
+    let routeData = null; // Captured from get_route tool result
 
     while (continueLoop) {
       const response = await anthropic.messages.create({
@@ -367,7 +382,22 @@ module.exports = async (req, res) => {
                   currency: "MYR",
                   valid_until: quoteData.valid_until,
                   carrier: "Trans-Peninsular Express Sdn Bhd",
+                  client_rfq_id: extractedData?.rfq_id || null,
+                  route_label: extractedData ? `${extractedData.origin} → ${extractedData.destination}` : null,
+                  route_distance_km: routeData?.distance_km || null,
                 },
+              });
+            }
+
+            if (extractedData) {
+              sendEvent(res, {
+                type: "client_info",
+                rfq_id: extractedData.rfq_id,
+                client_name: extractedData.client_name,
+                contact_person: extractedData.contact_person,
+                contact_email: extractedData.contact_email,
+                origin: extractedData.origin,
+                destination: extractedData.destination,
               });
             }
 
@@ -381,10 +411,11 @@ module.exports = async (req, res) => {
                 email_ref: emailRef,
                 from: "aria@mactrans.com.my",
                 from_name: "ARIA — Mactrans Logistics",
-                to: "procurement@globalconstruct.com.my",
-                to_name: "Ahmad Farouk, Global Construct Sdn Bhd",
-                subject:
-                  "RE: RFQ #MC-2026-0441 — Freight Quotation: KL to Penang Port",
+                to: extractedData?.contact_email || "procurement@globalconstruct.com.my",
+                to_name: extractedData ? `${extractedData.contact_person}, ${extractedData.client_name}` : "Ahmad Farouk, Global Construct Sdn Bhd",
+                subject: extractedData
+                  ? `RE: RFQ #${extractedData.rfq_id} — Freight Quotation: ${extractedData.origin} to ${extractedData.destination}`
+                  : "RE: RFQ #MC-2026-0441 — Freight Quotation: KL to Penang Port",
                 timestamp: new Date().toLocaleString("en-MY", {
                   timeZone: "Asia/Kuala_Lumpur",
                   day: "2-digit",
@@ -419,7 +450,7 @@ module.exports = async (req, res) => {
                 action_id: `act-${Date.now()}`,
                 action_type: "send_quote_email",
                 summary: quoteData
-                  ? `Send quotation email to Ahmad Farouk for MYR ${quoteData.final_quote_myr}, valid until ${quoteData.valid_until}?`
+                  ? `Send quotation email to ${extractedData?.contact_person || 'the client'} for MYR ${quoteData.final_quote_myr}, valid until ${quoteData.valid_until}?`
                   : "Send the drafted quotation email to the client?",
                 email_ref: emailRef,
                 whatsapp_prompt: waBody || "Boss, quote's ready — approve to send?",
@@ -453,6 +484,12 @@ module.exports = async (req, res) => {
           // Capture quote data for rate_card event
           if (block.name === "calculate_quote") {
             quoteData = result;
+          }
+          if (block.name === "extract_rfq_data") {
+            extractedData = result;
+          }
+          if (block.name === "get_route") {
+            routeData = result;
           }
 
           // Stream tool_response event to terminal
