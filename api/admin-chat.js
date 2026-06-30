@@ -33,8 +33,18 @@ End your response with EXACTLY these two lines in this format, with no other tex
 [QUOTE_PATCH: <compact JSON object>|none]`;
 
 // Used when nothing is currently pending approval — the chat is always available, not just
-// during an active approval gate, so this is a plain conversational mode with no markers.
-const GENERAL_CHAT_PROMPT = `You are ARIA, an autonomous freight-broker agent at Mactrans Logistics Sdn Bhd, chatting on WhatsApp with your sales admin (your boss). Nothing is currently awaiting their approval. Reply naturally and helpfully, like a sharp, slightly informal colleague — answer questions about recent quotes/clients using whatever context you're given, or just chat. Keep it under 4 lines, casual WhatsApp tone, emojis sparingly. Do not use any [DECISION] or [QUOTE_PATCH] markers — just reply in plain text.`;
+// during an active approval gate, so this is mostly a plain conversational mode. It also
+// watches for the admin instructing ARIA to compose and send a brand-new message to the
+// client (not tied to any existing pending_action) — e.g. "draft email asking about his
+// deadline" — which may take a couple of turns to confirm before it should actually fire.
+const GENERAL_CHAT_PROMPT = `You are ARIA, an autonomous freight-broker agent at Mactrans Logistics Sdn Bhd, chatting on WhatsApp with your sales admin (your boss). Nothing is currently awaiting their approval. Reply naturally and helpfully, like a sharp, slightly informal colleague — answer questions about recent quotes/clients using whatever context you're given, or just chat.
+
+Separately, watch for the admin instructing you to compose and send a NEW message to the client (e.g. "draft email asking about his deadline", "tell him we can revisit pricing if he's flexible on dates", "send him a final email saying we can't drop further") — this can take a couple of turns (you may ask a clarifying question first; treat a clear "yes"/"go ahead"/confirmation of your own question as confirming the ORIGINAL instruction, not a new one). Only fire once the instruction is unambiguous and confirmed, not while it's still being floated or discussed.
+
+Keep your reply under 4 lines, casual WhatsApp tone, emojis sparingly.
+
+End your response with EXACTLY this line in this format, with no other text after it:
+[ACTION: send_email|none]`;
 
 // Same clean marker convention used by api/agent.js and api/negotiate.js.
 function parseOutputBlocks(text) {
@@ -134,9 +144,10 @@ module.exports = async (req, res) => {
       .join("\n");
 
     // The chat is always available — even with nothing pending, the admin can keep talking
-    // to ARIA. This is a plain conversational reply with no approval/patch mechanics.
+    // to ARIA. Mostly a plain conversational reply, but can also produce a brand-new client
+    // email when the admin's instruction (across this message + prior turns) is confirmed.
     if (!pending_action) {
-      const generalPrompt = `${historyText ? `PRIOR CONVERSATION THIS SESSION:\n${historyText}\n\n` : ""}${client_name ? `Most recent client context: ${client_name}${original_email_body ? `\nLast drafted/sent email:\n"""\n${original_email_body}\n"""\n` : ""}\n\n` : ""}ADMIN JUST SAID:\n"${admin_message}"\n\nThere is no pending action right now. Reply as ARIA.`;
+      const generalPrompt = `${historyText ? `PRIOR CONVERSATION THIS SESSION:\n${historyText}\n\n` : ""}${client_name ? `Most recent client context: ${client_name}${original_email_body ? `\nLast drafted/sent email:\n"""\n${original_email_body}\n"""\n` : ""}\n\n` : ""}ADMIN JUST SAID:\n"${admin_message}"\n\nThere is no pending action right now. Reply as ARIA and end with the [ACTION: ...] marker.`;
 
       const generalResponse = await anthropic.messages.create({
         model: "claude-haiku-4-5-20251001",
@@ -145,13 +156,52 @@ module.exports = async (req, res) => {
         messages: [{ role: "user", content: generalPrompt }],
       });
 
-      const reply_text = generalResponse.content
+      const generalText = generalResponse.content
         .filter((b) => b.type === "text")
         .map((b) => b.text)
         .join("\n")
-        .trim() || "Standing by, boss.";
+        .trim();
 
-      res.status(200).json({ decision: "none", reply_text, revised: null });
+      // Loosely substring-matched rather than an exact "send_email"|"none" match: the model
+      // occasionally echoes the literal "send_email|none" template instead of picking one,
+      // and in every observed case that echo co-occurs with a reply that already confirms
+      // it's sending (e.g. "Perfect, sending that to Ahmad now") — so any mention of
+      // send_email inside the tag is treated as the positive signal.
+      const actionTagMatch = generalText.match(/\[ACTION:\s*([^\]]*)\]/i);
+      const action = actionTagMatch && /send_email/i.test(actionTagMatch[1]) ? "send_email" : "none";
+
+      let reply_text = generalText.replace(/\[ACTION:[^\]]*\]/i, "").trim() || "Standing by, boss.";
+      let decision = "none";
+      let revised = null;
+
+      if (action === "send_email") {
+        decision = "send_email";
+
+        const regenPrompt = `The sales admin has just instructed you, via WhatsApp chat, to compose and send a NEW email to the client. Use the conversation below to understand exactly what they want communicated — do not invent unrelated content, and do not reference figures unless the conversation actually supports them.\n\nCONVERSATION:\n${historyText ? `${historyText}\n` : ""}Admin: ${admin_message}\n\nClient: ${client_name || "the client"}\n${original_email_body ? `\nMost recent prior email to this client (for tone/identity reference only):\n"""\n${original_email_body}\n"""\n` : ""}\nDraft the new client email now, addressing exactly what the admin asked for. Then draft a brief WhatsApp CONFIRMATION message — the admin has already approved this by instructing you, so do not ask for further approval.\n\nUse the standard [EMAIL_DRAFT] and [WHATSAPP_MESSAGE] markers.`;
+
+        const regenResponse = await anthropic.messages.create({
+          model: "claude-haiku-4-5-20251001",
+          max_tokens: 1200,
+          system: SYSTEM_PROMPT,
+          messages: [{ role: "user", content: regenPrompt }],
+        });
+
+        const regenText = regenResponse.content
+          .filter((b) => b.type === "text")
+          .map((b) => b.text)
+          .join("\n");
+
+        const { emailBody, waBody } = parseOutputBlocks(regenText);
+
+        if (emailBody) {
+          revised = { email_body: emailBody };
+          if (waBody) reply_text = waBody;
+        } else {
+          decision = "none";
+        }
+      }
+
+      res.status(200).json({ decision, reply_text, revised });
       return;
     }
 

@@ -581,6 +581,22 @@ export default function App() {
         }
 
         setPendingApprovalState(null);
+      } else if (data.decision === 'send_email' && data.revised?.email_body) {
+        // Freeform instruction with no pending_action (e.g. "draft email asking about
+        // his deadline") — admin-chat already confirmed intent and drafted the content;
+        // this is a brand-new email, not a patch to an existing one, so append it.
+        setEmails(prev => [...prev, {
+          id: `email-adhoc-${Date.now()}`,
+          from: 'aria@mactrans.com.my',
+          from_name: 'ARIA — Mactrans Logistics',
+          to: effectiveClient.contact_email,
+          to_name: `${effectiveClient.contact_person}, ${effectiveClient.client_name}`,
+          subject: `RE: RFQ #${effectiveClient.rfq_id}`,
+          timestamp: nowMY({ day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }),
+          body: data.revised.email_body,
+          isCounterOffer: false,
+          status: 'sent',
+        }]);
       }
       // reject/clarify: keep pendingApproval as-is, conversation continues
     } catch (err) {
