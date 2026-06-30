@@ -527,40 +527,24 @@ export default function App() {
 
       if (data.decision === 'approve' && pendingApproval?.email_ref) {
         const ref = pendingApproval.email_ref;
-        const actionType = pendingApproval.action_type;
-        const isNegotiationAction = actionType === 'send_negotiation_reply' || actionType === 'send_alternate_offer';
 
-        // Admin gave a new price via chat (e.g. "adjust to rm3500 and send it") — the backend
-        // already redrafted the email/quote with that figure; apply it before marking sent so
-        // the email actually reflects the chat instruction instead of the stale earlier draft.
+        // Admin described a change via chat (e.g. "strip the discount" or "adjust to rm3500")
+        // — the backend already validated it, recalculated the total, and redrafted the email;
+        // apply that here before marking sent so nothing displayed is stale. This is one
+        // generic merge regardless of which action_type/quote shape this is — admin-chat
+        // already normalized whatever fields actually changed.
         if (data.revised) {
+          const rs = data.revised.quote_snapshot || {};
+          const revisedTotal = rs.total_quote_myr ?? rs.final_quote_myr ?? rs.final_offer_myr ?? null;
+
           setEmails(prev => prev.map(e => (e.id === ref ? { ...e, body: data.revised.email_body || e.body, status: 'sent' } : e)));
+          dispatchers.setRateCard(prev => prev ? {
+            ...prev,
+            ...rs,
+            ...(revisedTotal != null ? { total_quote_myr: revisedTotal } : {}),
+          } : prev);
         } else {
           setEmails(prev => prev.map(e => (e.id === ref ? { ...e, status: 'sent' } : e)));
-        }
-
-        // The Rate Card is the one persistent "what's the current quote" display — keep it in
-        // sync with whatever price was actually just sent, so it doesn't keep showing the
-        // original quote total after a counter-offer/alternate-offer goes out (with or without
-        // a chat-driven number override).
-        if (isNegotiationAction) {
-          const snapshot = pendingApproval.quote_snapshot || {};
-          const finalPrice = data.revised
-            ? data.revised.quote_snapshot.final_offer_myr
-            : (snapshot.final_offer_myr ?? snapshot.final_quote_myr);
-          if (finalPrice != null) {
-            dispatchers.setRateCard(prev => {
-              if (!prev) return prev;
-              // A negotiation counter only ever raises the floor (admin overriding upward via
-              // chat); an alternate-date offer is *designed* to land below the prior floor via
-              // a genuinely cheaper window, so it should replace the floor outright, not be
-              // clamped above it.
-              const newFloor = actionType === 'send_alternate_offer'
-                ? finalPrice
-                : Math.max(prev.minimum_acceptable_myr || 0, finalPrice);
-              return { ...prev, total_quote_myr: finalPrice, minimum_acceptable_myr: newFloor };
-            });
-          }
         }
 
         setPendingApprovalState(null);
