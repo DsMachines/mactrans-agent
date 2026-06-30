@@ -14,7 +14,7 @@ Read the admin's message carefully and reply the way a sharp, slightly informal 
 - "reject" — the admin has clearly said not to proceed, or to cancel
 - "clarify" — the admin asked a question, pushed back, mentioned a number without yet confirming you should act on it, or their intent isn't clear yet. In this case, your reply_text should answer their question or ask them to confirm before you act, and the conversation should continue.
 
-Separately, scan the ENTIRE conversation (prior history + this message) for any explicit price/amount the admin has stated should override the currently quoted figure (e.g. "rm3500", "RM 3,500", "make it 3500", "set it to 3,500"). If the admin has clearly confirmed/instructed you to use that figure, extract it as a plain number with no currency symbol or commas. If no such explicit, confirmed number exists, output "none".
+Separately, scan ONLY the admin's own typed words (prior "Admin:" lines + this message) — NEVER the "Quote details" JSON block, that's background context the admin did not type — for any explicit price/amount the admin has stated should override the currently quoted figure (e.g. "rm3500", "RM 3,500", "make it 3500", "set it to 3,500"). If the admin has clearly confirmed/instructed you to use a figure THEY THEMSELVES TYPED, extract it as a plain number with no currency symbol or commas. If the admin never typed a number (e.g. they just said "send", "strip the discount", "approved", or edited something outside the chat), output "none" — do not invent a number from the quote context just because one is present there.
 
 Use the pending action context and any prior chat history given to you. Keep your reply under 4 lines, casual WhatsApp tone, can use emojis sparingly.
 
@@ -80,7 +80,17 @@ module.exports = async (req, res) => {
     let decision = decisionMatch ? decisionMatch[1].toLowerCase() : "clarify";
 
     const amountMatch = text.match(/\[REVISED_AMOUNT:\s*([0-9.]+|none)\s*\]/i);
-    const revisedAmount = amountMatch && amountMatch[1].toLowerCase() !== "none" ? Number(amountMatch[1]) : null;
+    let revisedAmount = amountMatch && amountMatch[1].toLowerCase() !== "none" ? Number(amountMatch[1]) : null;
+
+    // Guard against the model pulling a number out of the "Quote details" JSON context (which
+    // always contains a price) instead of something the admin actually typed — e.g. a plain
+    // "send" was getting misread as a revision because the pending quote_snapshot had a total.
+    // Only trust a revised amount if a real number appears somewhere in the admin's own words.
+    if (revisedAmount != null) {
+      const adminOwnText = [admin_message, ...(chat_history || []).filter((t) => t.role === "admin").map((t) => t.content)].join(" ");
+      const adminTypedANumber = /\d{3,}/.test(adminOwnText.replace(/,/g, ""));
+      if (!adminTypedANumber) revisedAmount = null;
+    }
 
     let reply_text = text
       .replace(/\[DECISION:[^\]]*\]/i, "")
