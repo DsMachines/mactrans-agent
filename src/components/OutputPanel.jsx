@@ -55,7 +55,10 @@ export default function OutputPanel({
   }, [rateCard]);
 
   const showAmendQuote = isDone && !isStreaming;
-  const showClientPushesForMore = !pendingApproval && negotiationResult?.decision === 'counter' && negotiationReplySent && !alternateOffer;
+  // Client can push for an even better price whether the first round ended in an accept
+  // or a counter — e.g. the admin manually raised an accepted price via WhatsApp, and the
+  // client still wants a better number than that.
+  const showClientPushesForMore = !pendingApproval && negotiationReplySent && !alternateOffer;
   const showAcceptEscalate = !pendingApproval && (alternateOfferSent || (negotiationReplySent && negotiationResult));
   const showSimulateClientCounter = !pendingApproval && quoteSent && !negotiationResult;
 

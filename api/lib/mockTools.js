@@ -454,7 +454,11 @@ const evaluate_counter_offer = ({ original_quote_myr, counter_offer_myr, minimum
 
 // ── Tool 7: check_alternate_schedule ────────────────────────────────────────
 // Used by the persistent-negotiation flow when a client pushes for more discount than
-// approved. Produces a fake-but-mechanical "cheaper window" rather than an arbitrary number.
+// approved. Produces a fake-but-mechanical "cheaper window" rather than an arbitrary number —
+// and owns the actual pricing decision itself (rather than a separate calculate_quote call),
+// so the final figure quoted to the client is guaranteed consistent with what gets narrated.
+const ALTERNATE_SAVINGS_PCT = 6;
+
 const check_alternate_schedule = (args) => {
   const current = args.current_ship_date && !isNaN(new Date(args.current_ship_date))
     ? new Date(args.current_ship_date)
@@ -463,10 +467,28 @@ const check_alternate_schedule = (args) => {
   alt.setDate(alt.getDate() + 4);
   const altDateStr = alt.toISOString().split('T')[0];
 
+  const originalPrice = Number(args.original_quote_myr) || 0;
+  const requestedPrice = Number(args.requested_price_myr) || 0;
+
+  // The lowest price the alternate window mechanically supports.
+  const altWindowFloor = originalPrice > 0 ? Math.round(originalPrice * (1 - ALTERNATE_SAVINGS_PCT / 100)) : 0;
+  // Never quote above what the client actually asked for or above the original price.
+  const clampedRequest = requestedPrice > 0
+    ? Math.min(requestedPrice, originalPrice || requestedPrice)
+    : altWindowFloor;
+  // Meet the client's ask exactly if the window can support it; otherwise give the best
+  // achievable price for that window — never an arbitrary number either way.
+  const recommendedQuoteMyr = altWindowFloor > 0 ? Math.max(altWindowFloor, clampedRequest) : clampedRequest;
+
   return {
     alternate_date: altDateStr,
-    reason: 'Midweek demand is lower that week and TPE-001 has confirmed idle capacity, avoiding the weekend rush surcharge window.',
-    estimated_savings_pct: 6,
+    alternate_time_window: '05:30–07:00 AM departure (non-peak slot, avoids the port\'s 7-9am truck-queue surcharge window)',
+    alternate_truck_id: 'TPE-009',
+    alternate_driver_name: 'Hafiz Rahman',
+    reason: 'Midweek demand is lower that week and TPE-009 has confirmed idle capacity in a non-peak departure slot, avoiding the weekend rush and port congestion surcharge windows.',
+    estimated_savings_pct: ALTERNATE_SAVINGS_PCT,
+    recommended_quote_myr: recommendedQuoteMyr,
+    meets_client_request: requestedPrice > 0 && recommendedQuoteMyr <= requestedPrice + 0.5,
     alternate_weather: {
       condition: 'Clearer conditions expected, lower monsoon risk that week',
       risk_note: 'Minimal weather contingency needed',

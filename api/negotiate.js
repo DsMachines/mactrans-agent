@@ -38,31 +38,16 @@ const ALTERNATE_DATE_TOOLS = [
   {
     name: "check_alternate_schedule",
     description:
-      "Checks for an alternate ship date where trucks/drivers have idle capacity and traffic/weather conditions are more favorable, enabling a mechanically lower price.",
+      "Checks for an alternate ship date where trucks/drivers have idle capacity and traffic/weather conditions are more favorable, and returns the exact mechanically-achievable price for that window (recommended_quote_myr) — this is the authoritative final figure, not something to recalculate separately.",
     input_schema: {
       type: "object",
       properties: {
         route_id: { type: "string" },
         current_ship_date: { type: "string" },
+        original_quote_myr: { type: "number" },
+        requested_price_myr: { type: "number" },
       },
-      required: ["route_id"],
-    },
-  },
-  {
-    name: "calculate_quote",
-    description:
-      "Recalculates the quote for the alternate date, typically with a lower weather risk contingency given the more favorable window.",
-    input_schema: {
-      type: "object",
-      properties: {
-        base_rate_myr: { type: "number" },
-        fuel_surcharge_pct: { type: "number" },
-        has_insurance: { type: "boolean" },
-        has_escort: { type: "boolean" },
-        weather_risk_contingency_pct: { type: "number" },
-        target_margin_pct: { type: "number" },
-      },
-      required: ["base_rate_myr", "fuel_surcharge_pct", "target_margin_pct"],
+      required: ["route_id", "original_quote_myr", "requested_price_myr"],
     },
   },
 ];
@@ -110,12 +95,7 @@ module.exports = async (req, res) => {
     counter_offer_myr,
     client_name,
     rfq_id,
-    // Used only when mode === "alternate_date" — carried over from the rate card snapshot
-    base_rate_myr,
-    fuel_surcharge_pct,
-    has_insurance,
-    has_escort,
-    target_margin_pct,
+    // Used only when mode === "alternate_date"
     route_id,
     current_ship_date,
   } = req.body;
@@ -144,14 +124,13 @@ module.exports = async (req, res) => {
 
   try {
     const negotiatePrompt = isAlternateDate
-      ? `${client_name} is pushing for a further discount beyond our approved floor of MYR ${minimum_acceptable_myr} on RFQ ${rfq_id} (current offer on the table: MYR ${counter_offer_myr}).\n\nFirst call evaluate_counter_offer again with original_quote_myr=${original_quote_myr}, counter_offer_myr=${counter_offer_myr}, minimum_acceptable_myr=${minimum_acceptable_myr} to reconfirm we cannot go lower on this date.\n\nThen call check_alternate_schedule for route_id="${route_id || 'KUA-PEN-001'}" and current_ship_date="${current_ship_date || ''}" to see if a different ship date has idle capacity and better conditions.\n\nThen call calculate_quote with base_rate_myr=${base_rate_myr || 3200}, fuel_surcharge_pct=${fuel_surcharge_pct || 15}, has_insurance=${has_insurance !== false}, has_escort=${has_escort !== false}, target_margin_pct=${target_margin_pct || 22}, and weather_risk_contingency_pct=0 (the alternate window has better weather, so no contingency needed) to produce a genuinely lower number driven by the better window, not an arbitrary discount.\n\nThen draft an email to the client proposing the alternate date and new price as "we found a more efficient window," not as a discount concession, and a WhatsApp message asking the admin to approve sending it. Never reveal breakeven or internal cost structure.`
+      ? `${client_name} is pushing for a further discount beyond our approved floor of MYR ${minimum_acceptable_myr} on RFQ ${rfq_id} — their latest ask is MYR ${counter_offer_myr}.\n\nFirst call evaluate_counter_offer again with original_quote_myr=${original_quote_myr}, counter_offer_myr=${counter_offer_myr}, minimum_acceptable_myr=${minimum_acceptable_myr} to reconfirm we cannot go lower on the CURRENT ship date.\n\nThen call check_alternate_schedule for route_id="${route_id || 'KUA-PEN-001'}", current_ship_date="${current_ship_date || ''}", original_quote_myr=${original_quote_myr}, and requested_price_myr=${counter_offer_myr} to find a genuinely cheaper window and the exact price it makes achievable.\n\ncheck_alternate_schedule's recommended_quote_myr is the final, non-negotiable price — never invent, round, or adjust it yourself. If meets_client_request is true, the alternate window fully covers their MYR ${counter_offer_myr} ask; frame the email as meeting their number exactly. If false, recommended_quote_myr is the best achievable via this window — be upfront that it's the best we can do, still better than the current floor.\n\nDraft an email to the client proposing the new ship date, the non-peak departure time window, and the reassigned truck/driver from check_alternate_schedule's result, explaining plainly that shifting to that non-peak slot is what makes the lower rate possible — frame it as "we found a way to work with your number," not as a discount concession. Then draft a WhatsApp message asking the admin to approve sending it. Never reveal breakeven or internal cost structure.`
       : `A counter-offer has arrived from ${client_name} for RFQ ${rfq_id}.\n\nOriginal quote: MYR ${original_quote_myr}\nClient counter-offer: MYR ${counter_offer_myr}\nOur minimum acceptable price (10% floor): MYR ${minimum_acceptable_myr}\n\nPlease call evaluate_counter_offer to determine the business decision, then draft the appropriate reply email and a WhatsApp message asking the admin to approve sending it.\n\nRemember: never reveal breakeven or internal cost structure. Keep the reply professional and relationship-focused. The email is a DRAFT pending admin approval — do not say it has been sent.`;
 
     const messages = [{ role: "user", content: negotiatePrompt }];
     let continueLoop = true;
     let negotiationResult = null;
     let alternateScheduleResult = null;
-    let alternateQuoteResult = null;
 
     const toolSet = isAlternateDate ? ALTERNATE_DATE_TOOLS : NEGOTIATE_TOOLS;
 
@@ -175,12 +154,16 @@ module.exports = async (req, res) => {
             const { emailBody, waBody } = parseOutputBlocks(block.text);
 
             if (isAlternateDate && alternateScheduleResult) {
+              const finalAltPrice = alternateScheduleResult.recommended_quote_myr;
               sendEvent(res, {
                 type: "alternate_offer",
                 original_offer_myr: counter_offer_myr,
                 requested_myr: counter_offer_myr,
                 alternate_date: alternateScheduleResult.alternate_date,
-                alternate_quote_myr: alternateQuoteResult ? alternateQuoteResult.final_quote_myr : null,
+                alternate_time_window: alternateScheduleResult.alternate_time_window,
+                alternate_driver_name: alternateScheduleResult.alternate_driver_name,
+                alternate_quote_myr: finalAltPrice,
+                meets_client_request: alternateScheduleResult.meets_client_request,
                 savings_vs_original_pct: alternateScheduleResult.estimated_savings_pct,
                 reasoning: alternateScheduleResult.reason,
                 counter_email_body: emailBody,
@@ -192,10 +175,17 @@ module.exports = async (req, res) => {
                   type: "pending_action",
                   action_id: `act-${Date.now()}`,
                   action_type: "send_alternate_offer",
-                  summary: `Send alternate-date offer to ${client_name}: ship ${alternateScheduleResult.alternate_date} at MYR ${alternateQuoteResult ? alternateQuoteResult.final_quote_myr : '(recalculated)'}?`,
+                  summary: `Send alternate-date offer to ${client_name}: ship ${alternateScheduleResult.alternate_date} (${alternateScheduleResult.alternate_time_window}) at MYR ${finalAltPrice}?`,
                   email_ref: "email-alternate-offer",
-                  whatsapp_prompt: waBody || "Boss, found a cheaper window for this client — approve to send?",
-                  quote_snapshot: alternateQuoteResult,
+                  whatsapp_prompt: waBody || "Boss, found a way to work with this client's number via a schedule change — approve to send?",
+                  quote_snapshot: {
+                    final_quote_myr: finalAltPrice,
+                    final_offer_myr: finalAltPrice,
+                    minimum_acceptable_myr: finalAltPrice,
+                    alternate_date: alternateScheduleResult.alternate_date,
+                    alternate_time_window: alternateScheduleResult.alternate_time_window,
+                    alternate_driver_name: alternateScheduleResult.alternate_driver_name,
+                  },
                 });
               }
             } else if (!isAlternateDate && negotiationResult) {
@@ -254,9 +244,6 @@ module.exports = async (req, res) => {
           }
           if (block.name === "check_alternate_schedule") {
             alternateScheduleResult = result;
-          }
-          if (block.name === "calculate_quote") {
-            alternateQuoteResult = result;
           }
 
           sendEvent(res, {
