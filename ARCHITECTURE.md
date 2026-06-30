@@ -250,7 +250,48 @@ api/package.json         {"type": "commonjs"} — deliberate split from root ESM
 masterplan-v3.md          (one level up) original raw client requirements
 ```
 
-## 10. Known gaps / good next steps
+## 10. Safe development workflow for future changes
+
+Established and proven on the dynamic-RFQ-extraction fix (see §6/§8 history) — use this
+same sequence for future UX/feature work in this repo so `main` (and therefore the live
+`mactrans-agent.vercel.app` deploy) is never at risk mid-change:
+
+1. **Branch before touching anything**: `git checkout -b feature/<name>` off `main`.
+   `main` stays untouched and deployable for the entire duration of the work — worst
+   case is `git checkout main` or deleting the branch, zero blast radius.
+2. **Plan non-trivial/multi-file changes before coding** — read the affected files fully
+   first (this repo has cross-cutting hardcoded values that aren't obvious from a single
+   file, e.g. client identity was duplicated across `api/agent.js`, `App.jsx`, and
+   `RateCard.jsx`); confirm scope with the user before writing code if the change touches
+   more than 1-2 files or has more than one reasonable approach.
+3. **Verify locally before pushing anything**, in this order:
+   - `npm run lint` — compare against a `git stash` baseline if unsure whether an error
+     is pre-existing (this repo has ~30 pre-existing lint errors from the deliberate
+     CommonJS/`api` split and some React effect patterns — don't chase those).
+   - `npm run build` — catches JSX/syntax errors fast.
+   - For `api/*.js` changes: a throwaway Node script (in the OS scratch/temp dir, never
+     committed) that `require()`s the handler directly and feeds it a mock `req`/`res`
+     capturing `res.write()` calls, with **two test inputs**: the existing default
+     scenario (regression check) and a fabricated different one (to prove the change
+     generalizes). This is the standard way to exercise real Claude calls + real
+     `mockTools.js` logic without a backend dev server — `npm run dev` only serves the
+     Vite frontend, and `vercel dev`'s OAuth flow doesn't complete unattended here.
+   - For UI changes: launch `npm run dev`, drive it with browser automation
+     (`browser_navigate`/`browser_snapshot`/`browser_click`/`browser_console_messages`)
+     against the LAN IP from the Vite output, not `localhost` (browser tooling runs in a
+     separate network namespace) — exercise Safe Mode at minimum, since it's the one
+     flow that doesn't need a live backend, and check the console for errors.
+4. **Push the branch (not `main`) to get a Vercel Preview Deployment**: a real,
+   isolated URL with the real backend and real Claude calls, completely separate from
+   the production domain. This is the only way to test the live agentic flow (Deploy
+   button, negotiation round-trip) end-to-end before it's anywhere near production.
+   Confirm correct behavior there with the user before merging.
+5. **Merge to `main` only once confirmed**: since `main` hasn't moved during the work,
+   this is a fast-forward (`git checkout main && git merge <branch> --ff-only`) — no
+   merge commit, no conflict risk. `git push origin main` triggers the real production
+   deploy.
+
+## 11. Known gaps / good next steps
 
 1. **Set `GOOGLE_MAPS_API_KEY`** (local `.env` + Vercel env vars) to actually
    activate the real integration — currently running on fallback silently.
