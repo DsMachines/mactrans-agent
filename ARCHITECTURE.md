@@ -164,12 +164,37 @@ a plain conversational mode grounded in the most recent email/client context.
   admin-chat stays **real** even in Safe Mode — it's the single most novel
   capability being demonstrated, so a scripted "admin typed: approve" would be
   exactly what a technical observer would catch as fake.
+- **Dynamic client & RFQ extraction**: `extract_rfq_data` does not return canned data
+  — it takes Claude's own structured reading of the pasted email as tool args (client
+  name, contact, route, cargo, `required_by_date`, etc.), normalized with business-rule
+  defaults (insurance/escort thresholds) rather than re-derived from the raw text
+  server-side. The result reaches the frontend via a dedicated `client_info` SSE event
+  into `App.jsx`'s `clientInfo` state; `effectiveClient = clientInfo ||
+  DEFAULT_CLIENT_INFO` (the latter in `src/data/defaultRfq.js`) is the single source of
+  truth used everywhere identity/route/deadline is needed — negotiation emails, the
+  RateCard's RFQ tag/route line, alternate-date negotiation. There is no hardcoded
+  identity path once something has actually been deployed; `DEFAULT_CLIENT_INFO` only
+  covers Safe Mode / pre-deploy fallback.
+- **Deadline-aware alternate scheduling**: the extracted `required_by_date` threads
+  end-to-end — `client_info` → `effectiveClient.required_by_date` →
+  `/api/negotiate`'s `deadline_date` param → `check_alternate_schedule`'s tool schema.
+  The mock tool tries shifting the ship date forward by `[4, 3, 2, 1]` days, picking
+  the largest shift that still lands on/before the deadline; if even a 1-day shift
+  would miss it, it returns `feasible: false` with no date at all rather than
+  fabricating one past the deadline. `negotiate.js`'s prompt is told explicitly to
+  hold firm and draft an honest "the approved floor price stands" email in that case
+  — never to invent or override the tool's own date. **Known gap**: if the deadline
+  itself is unknown (extraction found none), there's nothing to clamp against and the
+  flow can get stuck asking a clarifying question with no way to resume — see §11.
 
 ## 6. The 11-step agent mission (`api/lib/systemPrompt.js` + `api/agent.js`)
 
 In order, each its own narrated step + tool call:
 
-1. `extract_rfq_data` — parse the raw RFQ text
+1. `extract_rfq_data` — Claude's own structured reading of the pasted email (client
+   identity, contact, route, cargo, `required_by_date`) passed as tool args and
+   normalized with business-rule defaults — never re-guessed server-side, never falls
+   back to canned example data (§5)
 2. `get_route` — base routing/traffic data
 3. `get_distance_real` — **the one real integration** (§8)
 4. `calculate_cost_per_km` — pure math, no API
@@ -189,7 +214,10 @@ In order, each its own narrated step + tool call:
 
 ## 7. Admin-chat decision model (`api/admin-chat.js`)
 
-Single Claude call (no tools), ends with:
+Two distinct prompt/marker conventions depending on whether a `pending_action` is open.
+
+**With an open `pending_action`** (`ADMIN_CHAT_PROMPT`) — single Claude call (no
+tools), ends with:
 ```
 [DECISION: approve|reject|clarify]
 [QUOTE_PATCH: {...}|none]
@@ -200,9 +228,36 @@ Single Claude call (no tools), ends with:
   redrafts the email/WhatsApp text using the new figures as authoritative (told
   explicitly not to recalculate) → email marked `'sent'` with the new body.
 - `reject` / `clarify` → conversation continues, nothing changes.
-- No `pending_action` at all → falls back to `GENERAL_CHAT_PROMPT`, a plain
-  conversational reply with no markers — this is what keeps the WhatsApp chat
-  always-on instead of freezing once nothing is pending.
+
+**With no `pending_action`** (`GENERAL_CHAT_PROMPT`) — this is what keeps the WhatsApp
+chat always-on instead of freezing once nothing is pending. Still a single bounded
+call, but ends with a different marker:
+```
+[ACTION: send_email|none]
+```
+- `none` → plain conversational reply, nothing else happens (the default — most
+  messages in this mode are just chat/questions, answered from whatever client/email
+  context is passed in).
+- `send_email` → the admin's instruction (this message + chat history) is a confirmed
+  ask to compose and send a brand-new client email not tied to any existing draft
+  (e.g. "draft email asking about his deadline" → ARIA asks a clarifying question →
+  admin confirms with "yes") → a second, tool-free Claude call (same shape as the
+  quote-patch regen above) drafts a fresh `[EMAIL_DRAFT]`/`[WHATSAPP_MESSAGE]` pair
+  from the full conversation → `App.jsx`'s `handleAdminChatSend` appends it as a
+  brand-new `emails` entry (`id: email-adhoc-<timestamp>`, status `'sent'`
+  immediately — the admin's confirmation *within this same chat* is the approval,
+  there's no further gate after that).
+  - **Known model quirk**: Claude sometimes echoes the literal `send_email|none`
+    template instead of substituting one value. The parser treats any occurrence of
+    the substring `send_email` inside the `[ACTION: ...]` tag as the positive signal
+    rather than requiring an exact match — every observed case of the literal echo
+    co-occurred with a reply that had already confirmed intent in plain text (e.g.
+    "Perfect, sending that to Ahmad now"), so this is a safe loosening, not a blind
+    override.
+  - **Not yet built**: this same freeform-instruction pattern is the natural building
+    block for a planned next step — simulated client deadline replies feeding a
+    repeated admin-directed requote loop, ending in a final "can't drop any further"
+    email — see §11.
 
 ## 8. Real vs. simulated integrations — current status
 
@@ -230,19 +285,37 @@ src/
   App.jsx               Top-level state, SSE consumption, all handler functions
   lib/
     sseParser.js        Routes SSE events to App.jsx state dispatchers
-    markdownToHtml.js    Minimal **bold**/bullet → HTML renderer for email bodies
+    markdownToHtml.js    Three renderers sharing inline-bold/escape helpers:
+                         `renderEmailBodyHtml` (emails), `renderNarrationHtml`
+                         (terminal narration — truncates at output markers, strips
+                         trailing junk lines), `renderChatHtml` (WhatsApp bubbles,
+                         inline-bold only)
   components/
     InputMatrix.jsx      Left panel — RFQ input, Safe Mode toggle, Deploy button
-    AgentTerminal.jsx    Middle panel — raw narration "console" (verbatim Claude text,
-                         intentionally unparsed/unstyled — this is NOT the email view)
+    AgentTerminal.jsx    Middle panel — structured reasoning-trace timeline (condensed
+                         IN/OUT per tool call via `toolMeta.js`, decision-step
+                         highlighting, raw-JSON-on-demand toggle) — NOT a raw JSON/text
+                         dump; this is the presentation layer for the tool-use loop,
+                         distinct from the email/WhatsApp output views
     OutputPanel.jsx      Right panel — stacks RateCard + OutlookSimulator +
                          WhatsAppSimulator, plus the presenter action-button row
-    RateCard.jsx         Editable line-item quote display ("Amend Quote" mode)
-    OutlookSimulator.jsx Fake Outlook inbox — renders email bodies as HTML
-    WhatsAppSimulator.jsx Fake WhatsApp thread — always-enabled input, real backend call
+    RateCard.jsx         Editable line-item quote display ("Amend Quote" mode); RFQ
+                         tag/route line are dynamic (`client_rfq_id`/`route_label`/
+                         `route_distance_km` from the `rate_card` event) with
+                         hardcoded-string fallback for Safe Mode
+    OutlookSimulator.jsx Fake Outlook inbox — renders every entry in the `emails`
+                         array as its own thread card (not single-email selection),
+                         email bodies as HTML
+    WhatsAppSimulator.jsx Fake WhatsApp thread — always-enabled input, real backend
+                         call, renders message text via `renderChatHtml`
   data/
-    defaultRfq.js        Default sample RFQ text pre-filled in the input box
+    defaultRfq.js        Default sample RFQ text + `DEFAULT_CLIENT_INFO` fallback
+                         identity (used by Safe Mode / before anything is deployed)
     fallbackPayload.js    Safe Mode scripted event sequences (3 arrays, see §5)
+    toolMeta.js           Per-tool presentation metadata for AgentTerminal — icon,
+                         label, `isDecision` flag, `summarizeIn(args)`/
+                         `summarizeOut(result)` for all known tools + a generic
+                         fallback (`getToolMeta(name)`)
 
 vercel.json              Function maxDuration overrides (agent 90s, negotiate 60s,
                          admin-chat 20s) + API rewrites
@@ -306,3 +379,29 @@ same sequence for future UX/feature work in this repo so `main` (and therefore t
 5. No automated test suite — verification throughout has been via direct
    handler invocation scripts (mock `req`/`res`, real Anthropic API calls) since
    `vercel dev`'s OAuth flow couldn't be completed unattended in this environment.
+6. **Alternate-date negotiation can get "stuck" when the deadline is unknown** — if
+   RFQ extraction didn't find a `required_by_date`, the deadline-aware
+   `check_alternate_schedule` logic (§5) has nothing to clamp against, and
+   `negotiate.js`'s prompt currently tells Claude to hold firm rather than guess — so
+   ARIA asks a clarifying question in plain text with no mechanism to actually receive
+   an answer and resume. Repeated "Client Pushes for More" clicks just repeat the same
+   dead-end response. Two directions were scoped but not yet built:
+   (a) **full ask-and-resume** — `negotiate.js` detects the missing deadline up front,
+   asks the admin via WhatsApp with a resumable `pending_action` carrying enough
+   context to continue (original/minimum/counter prices, client/route/ship-date), and
+   `admin-chat.js` gets a branch that recognizes the admin is answering ARIA's own
+   question, parses the date, and re-runs `check_alternate_schedule` directly; or
+   (b) **smaller stopgap** — drop the "non-negotiable" framing and have ARIA proceed
+   with judgement, flagging the missing date inline in the same drafted message
+   instead of refusing to draft at all. The new freeform `send_email` capability (§7)
+   is a useful building block for option (a) if/when this is revisited — it's also
+   the foundation for the user's next planned step: simulated client deadline replies
+   feeding a repeated admin-directed requote loop, ending in a final "can't drop
+   further" email.
+7. **Minor trailing-markdown artifacts can still appear** in admin-chat WhatsApp
+   confirmation text (e.g. a stray `---` separator before a short closing line) — same
+   general class of issue already solved for terminal narration
+   (`renderNarrationHtml`'s junk-line stripping in `markdownToHtml.js`) but not yet
+   applied to this code path; low priority, cosmetic only. Similarly, an unconfirmed
+   offer remains open to apply the same trailing-cleanup technique to the email draft
+   panel if a `---`/`##` artifact is spotted there again.
