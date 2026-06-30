@@ -38,6 +38,84 @@ const TOOL_DEFINITIONS = [
     },
   },
   {
+    name: "get_distance_real",
+    description:
+      "Calculates the real round-trip distance for hub → pickup → destination → hub using live routing data.",
+    input_schema: {
+      type: "object",
+      properties: {
+        hub_address: { type: "string", description: "Defaults to Mactrans HQ if omitted" },
+        origin: { type: "string" },
+        destination: { type: "string" },
+      },
+      required: ["origin", "destination"],
+    },
+  },
+  {
+    name: "calculate_cost_per_km",
+    description:
+      "Calculates the operating cost per kilometre (fuel + maintenance) for the planned round trip.",
+    input_schema: {
+      type: "object",
+      properties: {
+        round_trip_km: { type: "number" },
+        fuel_price_myr_per_liter: { type: "number" },
+        truck_fuel_efficiency_km_per_liter: { type: "number" },
+      },
+      required: ["round_trip_km"],
+    },
+  },
+  {
+    name: "get_weather_forecast",
+    description:
+      "Retrieves the weather outlook for the destination region on the requested ship date, falling back to seasonal historical prediction for long-range dates.",
+    input_schema: {
+      type: "object",
+      properties: {
+        destination_region: { type: "string" },
+        ship_date: { type: "string" },
+      },
+      required: ["destination_region", "ship_date"],
+    },
+  },
+  {
+    name: "get_route_incident_log",
+    description:
+      "Retrieves historical driver-logged incidents for this route (bridge clearances, potholes, narrow corners, recurring congestion, flood history).",
+    input_schema: {
+      type: "object",
+      properties: {
+        route_id: { type: "string" },
+      },
+      required: ["route_id"],
+    },
+  },
+  {
+    name: "get_fleet_status",
+    description:
+      "Checks the truck engine-management system for fleet condition (tire wear, brake inspection history) and flags any truck unsuitable for the route conditions.",
+    input_schema: {
+      type: "object",
+      properties: {
+        required_truck_type: { type: "string", enum: ["flatbed_standard", "flatbed_with_escort"] },
+      },
+      required: ["required_truck_type"],
+    },
+  },
+  {
+    name: "select_truck_and_driver",
+    description:
+      "Confirms and locks in the selected truck and driver for the trip given the route risk summary.",
+    input_schema: {
+      type: "object",
+      properties: {
+        route_risk_summary: { type: "string" },
+        recommended_truck_id: { type: "string" },
+      },
+      required: ["recommended_truck_id"],
+    },
+  },
+  {
     name: "get_market_rate",
     description:
       "Queries the internal rate database to return market benchmark pricing for a given cargo type and route.",
@@ -71,17 +149,21 @@ const TOOL_DEFINITIONS = [
   {
     name: "calculate_quote",
     description:
-      "Calculates the final client quotation by applying fuel surcharges, handling fees, insurance, and the target profit margin to the base market rate.",
+      "Calculates the final client quotation by applying real distance-driven cost, fuel surcharges, handling fees, insurance, weather contingency, and the target profit margin.",
     input_schema: {
       type: "object",
       properties: {
-        base_rate_myr: { type: "number" },
+        base_rate_myr: { type: "number", description: "Used only if round_trip_km/cost_per_km_myr are unavailable" },
+        round_trip_km: { type: "number" },
+        cost_per_km_myr: { type: "number" },
+        weight_kg: { type: "number" },
         fuel_surcharge_pct: { type: "number" },
         has_insurance: { type: "boolean" },
         has_escort: { type: "boolean" },
+        weather_risk_contingency_pct: { type: "number" },
         target_margin_pct: { type: "number" },
       },
-      required: ["base_rate_myr", "fuel_surcharge_pct", "target_margin_pct"],
+      required: ["fuel_surcharge_pct", "target_margin_pct"],
     },
   },
 ];
@@ -96,8 +178,12 @@ function parseOutputBlocks(text) {
   const emailMatch = text.match(/\[EMAIL_DRAFT\]([\s\S]*?)(\[WHATSAPP_MESSAGE\]|$)/);
   const waMatch = text.match(/\[WHATSAPP_MESSAGE\]([\s\S]*?)$/);
 
-  const emailBody = emailMatch ? emailMatch[1].trim() : null;
-  const waBody = waMatch ? waMatch[1].trim() : null;
+  // Strip stray markdown bolding Claude sometimes wraps around its own section tags
+  // (e.g. "**[EMAIL_DRAFT]**"), which our marker regex doesn't consume.
+  const stripLeadingMarkdown = (s) => (s || '').trim().replace(/^\*+\s*/, '').trim();
+
+  const emailBody = emailMatch ? stripLeadingMarkdown(emailMatch[1]) : null;
+  const waBody = waMatch ? stripLeadingMarkdown(waMatch[1]) : null;
 
   return { emailBody, waBody };
 }
@@ -133,7 +219,7 @@ module.exports = async (req, res) => {
     // ── Build initial message ──────────────────────────────────────────────
     let userMessage;
     if (mode === "regenerate_email" && amended_values) {
-      userMessage = `The quote has been manually amended by the operations team. Please regenerate ONLY the client email and internal WhatsApp message using the following updated values:\n\n${JSON.stringify(amended_values, null, 2)}\n\nUse the same client and RFQ details from the previous run (Ahmad Farouk, Global Construct, RFQ #MC-2026-0441).`;
+      userMessage = `The quote has been manually amended by the operations team. Please regenerate ONLY the client email draft and the WhatsApp approval request using the following updated values:\n\n${JSON.stringify(amended_values, null, 2)}\n\nUse the same client and RFQ details from the previous run (Ahmad Farouk, Global Construct, RFQ #MC-2026-0441). Remember the email is still a DRAFT pending admin approval — do not say it has been sent.`;
     } else {
       userMessage = `Please process this incoming RFQ:\n\n${rfq_text}`;
     }
@@ -177,6 +263,8 @@ module.exports = async (req, res) => {
                   insurance_fee_myr: quoteData.insurance_fee_myr,
                   escort_fee_myr: quoteData.escort_fee_myr,
                   handling_fee_myr: quoteData.handling_fee_myr,
+                  distance_cost_myr: quoteData.distance_cost_myr,
+                  weather_contingency_myr: quoteData.weather_contingency_myr,
                   subtotal_myr: quoteData.subtotal_myr,
                   applied_margin_pct: quoteData.applied_margin_pct,
                   discount_applied_myr: quoteData.discount_applied_myr,
@@ -189,10 +277,14 @@ module.exports = async (req, res) => {
               });
             }
 
-            // Email draft event
+            let emailRef = null;
+
+            // Email draft event (status: draft — admin approval required before "send")
             if (emailBody) {
+              emailRef = "email-1";
               sendEvent(res, {
                 type: "email_draft",
+                email_ref: emailRef,
                 from: "aria@mactrans.com.my",
                 from_name: "ARIA — Mactrans Logistics",
                 to: "procurement@globalconstruct.com.my",
@@ -211,7 +303,7 @@ module.exports = async (req, res) => {
               });
             }
 
-            // WhatsApp event
+            // WhatsApp event — this is ARIA asking the admin for approval, not a confirmation
             if (waBody) {
               sendEvent(res, {
                 type: "whatsapp_msg",
@@ -225,6 +317,21 @@ module.exports = async (req, res) => {
                 content: waBody,
               });
             }
+
+            // Admin-approval gate: nothing is "sent" until the admin approves via WhatsApp chat
+            if (emailBody && emailRef) {
+              sendEvent(res, {
+                type: "pending_action",
+                action_id: `act-${Date.now()}`,
+                action_type: mode === "regenerate_email" ? "send_amended_quote_email" : "send_quote_email",
+                summary: quoteData
+                  ? `Send quotation email to Ahmad Farouk for MYR ${quoteData.final_quote_myr}, valid until ${quoteData.valid_until}?`
+                  : "Send the drafted quotation email to the client?",
+                email_ref: emailRef,
+                whatsapp_prompt: waBody || "Boss, quote's ready — approve to send?",
+                quote_snapshot: quoteData,
+              });
+            }
           }
         }
 
@@ -236,11 +343,15 @@ module.exports = async (req, res) => {
             args: block.input,
           });
 
-          // Execute mock tool
+          // Execute mock tool (some, like get_distance_real, are async — await is a no-op for sync results)
           const toolFn = tools[block.name];
           let result;
           if (toolFn) {
-            result = toolFn(block.input);
+            try {
+              result = await toolFn(block.input);
+            } catch (toolErr) {
+              result = { error: `Tool ${block.name} failed: ${toolErr.message}` };
+            }
           } else {
             result = { error: `Unknown tool: ${block.name}` };
           }
@@ -276,7 +387,7 @@ module.exports = async (req, res) => {
       }
     }
 
-    // Stream done event
+    // Stream done event — this means the SSE stream finished, NOT that anything was sent
     sendEvent(res, { type: "done" });
   } catch (err) {
     console.error("ARIA agent error:", err);

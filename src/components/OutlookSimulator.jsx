@@ -27,8 +27,8 @@ export default function OutlookSimulator({ emails = [] }) {
       {/* Tabs bar */}
       <div style={styles.tabsBar}>
         <span style={styles.activeTab}>INBOX ({emails.filter(e => e.isCounterOffer).length})</span>
-        <span style={styles.tab}>SENT</span>
-        <span style={styles.tab}>DRAFTS</span>
+        <span style={styles.tab}>SENT ({emails.filter(e => !e.isCounterOffer && e.status === 'sent').length})</span>
+        <span style={styles.tab}>DRAFTS ({emails.filter(e => !e.isCounterOffer && e.status === 'draft').length})</span>
       </div>
 
       {/* Email Thread Area */}
@@ -46,6 +46,12 @@ export default function OutlookSimulator({ emails = [] }) {
               }}
             >
               <div style={styles.emailMeta}>
+                {!email.isCounterOffer && email.status === 'draft' && (
+                  <span style={styles.draftBadge}>DRAFT — PENDING APPROVAL</span>
+                )}
+                {!email.isCounterOffer && email.status === 'sent' && (
+                  <span style={styles.sentBadge}>✓ SENT</span>
+                )}
                 <div style={styles.metaRow}>
                   <span style={styles.metaLabel}>From:</span>
                   <span style={styles.metaValue}>
@@ -186,6 +192,30 @@ const styles = {
   counterOfferCard: {
     borderLeft: '3px solid #0078d4', // Blue border for incoming counter-offer
     backgroundColor: '#1a222f',
+  },
+  draftBadge: {
+    alignSelf: 'flex-start',
+    fontSize: '10px',
+    fontWeight: '700',
+    letterSpacing: '0.5px',
+    color: 'var(--accent-amber)',
+    backgroundColor: 'rgba(255, 184, 0, 0.12)',
+    border: '1px solid rgba(255, 184, 0, 0.4)',
+    borderRadius: '4px',
+    padding: '2px 6px',
+    marginBottom: '2px',
+  },
+  sentBadge: {
+    alignSelf: 'flex-start',
+    fontSize: '10px',
+    fontWeight: '700',
+    letterSpacing: '0.5px',
+    color: 'var(--accent-green)',
+    backgroundColor: 'rgba(0, 255, 157, 0.1)',
+    border: '1px solid rgba(0, 255, 157, 0.35)',
+    borderRadius: '4px',
+    padding: '2px 6px',
+    marginBottom: '2px',
   },
   emailMeta: {
     display: 'flex',

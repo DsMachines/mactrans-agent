@@ -21,6 +21,12 @@ export function routeEvent(event, dispatchers) {
     case 'negotiation_result':
       dispatchers.setNegotiationResult(event);
       break;
+    case 'alternate_offer':
+      dispatchers.setAlternateOffer(event);
+      break;
+    case 'pending_action':
+      dispatchers.setPendingApproval(event);
+      break;
     case 'done':
       dispatchers.setDone(true);
       break;

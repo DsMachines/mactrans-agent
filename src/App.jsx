@@ -3,21 +3,34 @@ import InputMatrix from './components/InputMatrix';
 import AgentTerminal from './components/AgentTerminal';
 import OutputPanel from './components/OutputPanel';
 import { DEFAULT_RFQ } from './data/defaultRfq';
-import { FALLBACK_EVENTS, PLAYBACK_DELAYS_MS } from './data/fallbackPayload';
+import {
+  FALLBACK_EVENTS, PLAYBACK_DELAYS_MS,
+  FALLBACK_NEGOTIATION_EVENTS, NEGOTIATION_PLAYBACK_DELAYS_MS,
+  FALLBACK_ALTERNATE_EVENTS, ALTERNATE_PLAYBACK_DELAYS_MS,
+} from './data/fallbackPayload';
 import { routeEvent } from './lib/sseParser';
+
+const nowMY = (opts) => new Date().toLocaleString("en-MY", { timeZone: "Asia/Kuala_Lumpur", ...opts });
+const timeMY = () => new Date().toLocaleTimeString("en-MY", { timeZone: "Asia/Kuala_Lumpur", hour: "2-digit", minute: "2-digit" });
 
 export default function App() {
   // Global Clock State
   const [currentTime, setCurrentTime] = useState(new Date());
-  
+
   // App States
   const [rfqText, setRfqText] = useState(DEFAULT_RFQ);
   const [terminalLines, setTerminalLines] = useState([]);
   const [rateCard, setRateCard] = useState(null);
   const [emails, setEmails] = useState([]);
   const [whatsappMessages, setWhatsappMessages] = useState([]);
-  const [negotiationResult, setNegotiationResult] = useState(null);
-  
+  const [negotiationResult, setNegotiationResultState] = useState(null);
+  const [alternateOffer, setAlternateOfferState] = useState(null);
+
+  // Admin-approval gate state
+  const [pendingApproval, setPendingApprovalState] = useState(null);
+  const [adminChatHistory, setAdminChatHistory] = useState([]);
+  const [isAdminChatLoading, setIsAdminChatLoading] = useState(false);
+
   // Streaming/Execution states
   const [isStreaming, setIsStreaming] = useState(false);
   const [isDone, setIsDone] = useState(false);
@@ -34,6 +47,18 @@ export default function App() {
     return () => clearInterval(timer);
   }, []);
 
+  // Derived email-status flags driving the presenter-button state machine
+  const email1 = emails.find(e => e.id === 'email-1');
+  const quoteSent = email1?.status === 'sent';
+  const negReplyEmail = emails.find(e => e.id === 'email-negotiation-reply');
+  const negotiationReplySent = negReplyEmail?.status === 'sent';
+  const altOfferEmail = emails.find(e => e.id === 'email-alternate-offer');
+  const alternateOfferSent = altOfferEmail?.status === 'sent';
+
+  const pushWhatsapp = (msg) => {
+    setWhatsappMessages(prev => [...prev, { id: `wa-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, ...msg }]);
+  };
+
   // Dispatchers setup for sseParser
   const dispatchers = {
     addTerminalLine: (line) => {
@@ -43,36 +68,33 @@ export default function App() {
       setRateCard(data);
     },
     setEmail: (event) => {
-      setEmails([
-        {
-          id: 'email-1',
-          from: event.from,
-          from_name: event.from_name,
-          to: event.to,
-          to_name: event.to_name,
-          subject: event.subject,
-          timestamp: event.timestamp,
-          body: event.body,
-          isCounterOffer: false
-        }
-      ]);
+      const id = event.email_ref || 'email-1';
+      const newEmail = {
+        id,
+        from: event.from,
+        from_name: event.from_name,
+        to: event.to,
+        to_name: event.to_name,
+        subject: event.subject,
+        timestamp: event.timestamp,
+        body: event.body,
+        isCounterOffer: false,
+        status: 'draft',
+      };
+      setEmails(prev => (prev.some(e => e.id === id) ? prev.map(e => (e.id === id ? newEmail : e)) : [...prev, newEmail]));
     },
     setWhatsapp: (event) => {
-      setWhatsappMessages([
-        {
-          id: 'wa-1',
-          sender: event.sender,
-          avatarInitials: event.avatar_initials,
-          timestamp: event.timestamp,
-          content: event.content,
-          isOutgoing: true
-        }
-      ]);
+      pushWhatsapp({
+        sender: event.sender,
+        avatarInitials: event.avatar_initials,
+        timestamp: event.timestamp,
+        content: event.content,
+        isOutgoing: true,
+      });
     },
     setNegotiationResult: (event) => {
-      setNegotiationResult(event);
+      setNegotiationResultState(event);
 
-      // 1. Client counter-offer email
       const clientEmail = {
         id: 'email-client-counter',
         from: 'procurement@globalconstruct.com.my',
@@ -80,36 +102,23 @@ export default function App() {
         to: 'quotes@mactrans.com.my',
         to_name: 'ARIA Agent',
         subject: 'RE: RFQ #MC-2026-0441',
-        timestamp: new Date().toLocaleString("en-MY", {
-          timeZone: "Asia/Kuala_Lumpur",
-          day: "2-digit",
-          month: "short",
-          year: "numeric",
-          hour: "2-digit",
-          minute: "2-digit",
-        }),
+        timestamp: nowMY({ day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }),
         body: `Hi, thanks for the quote. MYR 3,880 is a bit high for us.\nCan you do MYR 3,400? That would work for our budget.`,
-        isCounterOffer: true
+        isCounterOffer: true,
+        status: 'received',
       };
 
-      // 2. ARIA counter email reply
       const replyEmail = {
-        id: 'email-aria-reply',
+        id: 'email-negotiation-reply',
         from: 'aria@mactrans.com.my',
         from_name: 'ARIA — Mactrans Logistics',
         to: 'procurement@globalconstruct.com.my',
         to_name: 'Ahmad Farouk, Global Construct Sdn Bhd',
         subject: 'RE: RFQ #MC-2026-0441 — Freight Quotation: KL to Penang Port',
-        timestamp: new Date().toLocaleString("en-MY", {
-          timeZone: "Asia/Kuala_Lumpur",
-          day: "2-digit",
-          month: "short",
-          year: "numeric",
-          hour: "2-digit",
-          minute: "2-digit",
-        }),
+        timestamp: nowMY({ day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }),
         body: event.counter_email_body,
-        isCounterOffer: false
+        isCounterOffer: false,
+        status: 'draft',
       };
 
       setEmails(prev => {
@@ -117,23 +126,39 @@ export default function App() {
         return [...base, clientEmail, replyEmail];
       });
 
-      // 3. WhatsApp messages
-      const waUpdate = {
-        id: 'wa-negotiation-update',
-        sender: 'ARIA Bot',
-        avatarInitials: 'AB',
-        timestamp: new Date().toLocaleTimeString("en-MY", {
-          timeZone: "Asia/Kuala_Lumpur",
-          hour: "2-digit",
-          minute: "2-digit",
-        }),
-        content: event.whatsapp_update || `Boss, they came back at MYR 3,400 (${event.discount_pct}% off). Outside our floor. Countered at MYR ${event.counter_offer_myr || 3492} (10% max). Ball in their court. 🏓`,
-        isOutgoing: true
-      };
+      if (event.whatsapp_update) {
+        pushWhatsapp({ sender: 'ARIA Bot', avatarInitials: 'AB', timestamp: timeMY(), content: event.whatsapp_update, isOutgoing: true });
+      }
+    },
+    setAlternateOffer: (event) => {
+      setAlternateOfferState(event);
 
-      setWhatsappMessages(prev => {
-        const base = prev.filter(m => m.id === 'wa-1');
-        return [...base, waUpdate];
+      const altEmail = {
+        id: 'email-alternate-offer',
+        from: 'aria@mactrans.com.my',
+        from_name: 'ARIA — Mactrans Logistics',
+        to: 'procurement@globalconstruct.com.my',
+        to_name: 'Ahmad Farouk, Global Construct Sdn Bhd',
+        subject: 'RE: RFQ #MC-2026-0441 — Alternate Ship Date Offer',
+        timestamp: nowMY({ day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }),
+        body: event.counter_email_body,
+        isCounterOffer: false,
+        status: 'draft',
+      };
+      setEmails(prev => [...prev.filter(e => e.id !== 'email-alternate-offer'), altEmail]);
+
+      if (event.whatsapp_update) {
+        pushWhatsapp({ sender: 'ARIA Bot', avatarInitials: 'AB', timestamp: timeMY(), content: event.whatsapp_update, isOutgoing: true });
+      }
+    },
+    setPendingApproval: (event) => {
+      setPendingApprovalState({
+        action_id: event.action_id,
+        action_type: event.action_type,
+        summary: event.summary,
+        email_ref: event.email_ref,
+        whatsapp_prompt: event.whatsapp_prompt,
+        quote_snapshot: event.quote_snapshot,
       });
     },
     setDone: (val) => {
@@ -178,6 +203,28 @@ export default function App() {
     }
   };
 
+  // Generic scripted-playback helper used by Safe Mode for every phase (initial quote,
+  // negotiation reply, alternate-date offer). Each scripted array ends right after its own
+  // pending_action + done events, so there's nothing further to auto-advance into — the next
+  // phase only starts when the presenter clicks the next button or the real admin-chat
+  // round-trip resolves the current pendingApproval.
+  const playEventSequence = (events, delays) => {
+    let idx = 0;
+    const playNext = () => {
+      if (idx >= events.length) {
+        setIsStreaming(false);
+        setIsDone(true);
+        return;
+      }
+      const event = events[idx];
+      const delay = delays[idx];
+      routeEvent(event, dispatchers);
+      idx++;
+      setTimeout(playNext, delay);
+    };
+    playNext();
+  };
+
   // Trigger main deployment
   const handleDeploy = async () => {
     // Reset States
@@ -185,7 +232,10 @@ export default function App() {
     setRateCard(null);
     setEmails([]);
     setWhatsappMessages([]);
-    setNegotiationResult(null);
+    setNegotiationResultState(null);
+    setAlternateOfferState(null);
+    setPendingApprovalState(null);
+    setAdminChatHistory([]);
     setIsDone(false);
     setIsStreaming(true);
     setError(null);
@@ -219,38 +269,23 @@ export default function App() {
     }
   };
 
-  // Safe Mode Playback Simulation
+  // Safe Mode Playback Simulation (initial quote phase)
   const handleSafeMode = () => {
     setTerminalLines([]);
     setRateCard(null);
     setEmails([]);
     setWhatsappMessages([]);
-    setNegotiationResult(null);
+    setNegotiationResultState(null);
+    setAlternateOfferState(null);
+    setPendingApprovalState(null);
+    setAdminChatHistory([]);
     setIsDone(false);
     setIsStreaming(true);
     setError(null);
     setEditMode(false);
     setIsSafeMode(true);
 
-    let currentIdx = 0;
-
-    const playNext = () => {
-      if (currentIdx >= FALLBACK_EVENTS.length) {
-        setIsStreaming(false);
-        setIsDone(true);
-        return;
-      }
-
-      const event = FALLBACK_EVENTS[currentIdx];
-      const delay = PLAYBACK_DELAYS_MS[currentIdx];
-
-      routeEvent(event, dispatchers);
-
-      currentIdx++;
-      setTimeout(playNext, delay);
-    };
-
-    playNext();
+    playEventSequence(FALLBACK_EVENTS, PLAYBACK_DELAYS_MS);
   };
 
   // Amend Quote callback
@@ -258,12 +293,12 @@ export default function App() {
     setEditMode(prev => !prev);
   };
 
-  // Recalculate & Regenerate from RateCard
+  // Recalculate & Regenerate from RateCard — produces a fresh pending_action, same as the
+  // primary flow, so the amended quote still requires admin approval before it's "sent."
   const handleRecalculate = async (amendedValues) => {
     setIsStreaming(true);
     setEditMode(false);
-    
-    // Add brief terminal logs signalling update
+
     dispatchers.addTerminalLine({
       type: 'separator',
       content: '🔄 RATE CARD AMENDED — REGENERATING OUTBOUND LOGISTICS COMMUNICATIONS 🔄'
@@ -274,52 +309,42 @@ export default function App() {
     });
 
     try {
-      // If we are in safe mode or API keys are missing, we mock the regeneration locally
       if (isSafeMode) {
         setTimeout(() => {
-          // Calculate the custom values locally
-          const updatedRateCard = {
-            ...rateCard,
-            ...amendedValues
-          };
-          setRateCard(updatedRateCard);
-          
-          // Generate revised email
-          const updatedEmail = {
-            id: 'email-1',
+          const updatedRateCard = { ...rateCard, ...amendedValues };
+          dispatchers.setRateCard(updatedRateCard);
+
+          dispatchers.setEmail({
+            email_ref: 'email-1',
             from: "aria@mactrans.com.my",
             from_name: "ARIA — Mactrans Logistics",
             to: "procurement@globalconstruct.com.my",
             to_name: "Ahmad Farouk, Global Construct Sdn Bhd",
             subject: "RE: RFQ #MC-2026-0441 — Freight Quotation: KL to Penang Port",
-            timestamp: new Date().toLocaleString("en-MY", {
-              timeZone: "Asia/Kuala_Lumpur",
-              day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit"
-            }),
+            timestamp: nowMY({ day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }),
             body: `Dear Mr. Ahmad,\n\nThank you for submitting RFQ #MC-2026-0441. We are pleased to provide our updated quotation for the transport of your CNC milling machines (3 units, crated) from Cheras Industrial Zone, Kuala Lumpur to Penang Port, Butterworth.\n\n**Quotation Summary (Amended):**\n- Base Freight Rate: MYR ${amendedValues.base_rate_myr.toFixed(2)}\n- Fuel Surcharge: MYR ${amendedValues.fuel_surcharge_myr.toFixed(2)}\n- Cargo Insurance: MYR ${amendedValues.insurance_fee_myr.toFixed(2)}\n- Escort Vehicle: MYR ${amendedValues.escort_fee_myr.toFixed(2)}\n- Handling: MYR ${amendedValues.handling_fee_myr.toFixed(2)}\n- **Total: MYR ${amendedValues.total_quote_myr.toFixed(2)}**\n\n**Carrier:** Trans-Peninsular Express Sdn Bhd (Rating: 4.8/5)\n**Estimated Transit:** 4.5 hours via North-South Expressway\n**Quote Valid Until:** 6 July 2026\n\nThis quote includes full cargo insurance coverage and a dedicated escort vehicle as requested. We recommend a 05:00 departure to avoid peak congestion near the Ipoh interchange.\n\nPlease confirm your acceptance and we will proceed with booking immediately.\n\nWarm regards,\nARIA | Mactrans Logistics`
-          };
+          });
 
-          // Generate revised WhatsApp
-          const updatedWhatsapp = {
-            id: 'wa-1',
-            sender: "ARIA Bot",
-            avatarInitials: "AB",
-            timestamp: new Date().toLocaleTimeString("en-MY", {
-              timeZone: "Asia/Kuala_Lumpur", hour: "2-digit", minute: "2-digit"
-            }),
-            content: `Boss, rate card manually adjusted. New quote: MYR ${amendedValues.total_quote_myr.toLocaleString()}. Adjusted margin. New email draft sent to Global Construct. Standing by. ✅`
-          };
+          const waPrompt = `Boss, rate card manually adjusted — new quote MYR ${amendedValues.total_quote_myr.toLocaleString()}. Drafted the updated email, approve to send? 👍`;
+          dispatchers.setWhatsapp({ sender: "ARIA Bot", avatar_initials: "AB", timestamp: timeMY(), content: waPrompt });
 
-          setEmails([updatedEmail]);
-          setWhatsappMessages([updatedWhatsapp]);
-          dispatchers.addTerminalLine({ type: 'thinking', content: 'Outbound communications regenerated successfully.' });
+          dispatchers.setPendingApproval({
+            action_id: `act-${Date.now()}`,
+            action_type: 'send_amended_quote_email',
+            summary: `Send amended quote to client for MYR ${amendedValues.total_quote_myr}?`,
+            email_ref: 'email-1',
+            whatsapp_prompt: waPrompt,
+            quote_snapshot: updatedRateCard,
+          });
+
+          dispatchers.addTerminalLine({ type: 'thinking', content: 'Outbound communications regenerated successfully — awaiting admin approval.' });
           dispatchers.addTerminalLine({ type: 'done' });
           setIsStreaming(false);
+          setIsDone(true);
         }, 1500);
         return;
       }
 
-      // Real network call for regeneration
       const response = await fetch('/api/agent', {
         method: 'POST',
         headers: {
@@ -342,11 +367,10 @@ export default function App() {
     }
   };
 
-  // Auto Negotiate callback
-  const handleAutoNegotiate = async () => {
+  // Presenter simulates the client side: injects an incoming counter-offer and re-engages ARIA
+  const handleSimulateClientCounter = async () => {
     setIsStreaming(true);
 
-    // 1. Inject client's incoming counter-offer email to simulator thread
     const clientCounterOffer = {
       id: 'email-client-counter',
       from: 'procurement@globalconstruct.com.my',
@@ -354,17 +378,14 @@ export default function App() {
       to: 'quotes@mactrans.com.my',
       to_name: 'ARIA Agent',
       subject: 'RE: RFQ #MC-2026-0441',
-      timestamp: new Date().toLocaleString("en-MY", {
-        timeZone: "Asia/Kuala_Lumpur",
-        day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit"
-      }),
+      timestamp: nowMY({ day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }),
       body: `Hi, thanks for the quote. MYR ${rateCard?.total_quote_myr || 3880} is a bit high for us.\nCan you do MYR 3,400? That would work for our budget.`,
-      isCounterOffer: true
+      isCounterOffer: true,
+      status: 'received',
     };
 
     setEmails(prev => [...prev, clientCounterOffer]);
 
-    // 2. Append re-engagement header to terminal
     dispatchers.addTerminalLine({
       type: 'separator',
       content: '--- COUNTER-OFFER RECEIVED — RE-ENGAGING ARIA ---'
@@ -376,56 +397,11 @@ export default function App() {
     });
 
     try {
-      // Support local mock negotiation if in safe mode or API keys not set
       if (isSafeMode || error) {
-        setTimeout(() => {
-          const mockNegEvent = {
-            type: "negotiation_result",
-            decision: "counter",
-            reasoning: "Client's offer of MYR 3,400 represents a 12.4% discount — this exceeds our 10% maximum margin floor. I will counter at MYR 3,492 (exactly 10% below original quote) to protect minimum profitability.",
-            counter_offer_myr: 3492,
-            discount_pct: "12.4",
-            counter_email_body: `Dear Mr. Ahmad,\n\nThank you for your response. While we appreciate your budget constraints, our quote of MYR ${rateCard?.total_quote_myr || 3880} is already highly optimized for flatbed transport with a dedicated escort vehicle and full cargo insurance.\n\nWe want to support your timeline for the July 5th vessel. The absolute best counter-offer we can support under Mactrans business rules is MYR 3,492.00 (which represents a 10% discount from our original quote).\n\nThis price still includes the flatbed, escort vehicle, and cargo insurance. Please let us know if this works so we can lock in Trans-Peninsular Express.\n\nWarm regards,\nARIA | Mactrans Logistics`,
-            whatsapp_update: "Boss, they came back at MYR 3,400 (12.4% off). Outside our floor. Countered at MYR 3,492 (10% max). Ball in their court. 🏓"
-          };
-
-          // Print tool actions to terminal
-          dispatchers.addTerminalLine({
-            type: 'tool_call',
-            name: 'evaluate_counter_offer',
-            args: {
-              original_quote_myr: rateCard?.total_quote_myr || 3880,
-              counter_offer_myr: 3400,
-              minimum_acceptable_myr: rateCard?.minimum_acceptable_myr || 3492
-            }
-          });
-
-          setTimeout(() => {
-            dispatchers.addTerminalLine({
-              type: 'tool_response',
-              name: 'evaluate_counter_offer',
-              result: {
-                decision: "counter",
-                discount_pct: "12.4",
-                counter_offer_myr: rateCard?.minimum_acceptable_myr || 3492,
-                reasoning: "Counter-offer exceeds 10% discount threshold. Counter at minimum acceptable MYR 3,492."
-              }
-            });
-
-            dispatchers.addTerminalLine({
-              type: 'thinking',
-              content: 'Drafting counter-proposal email and alert.'
-            });
-
-            dispatchers.setNegotiationResult(mockNegEvent);
-            dispatchers.addTerminalLine({ type: 'done' });
-            setIsStreaming(false);
-          }, 800);
-        }, 1200);
+        playEventSequence(FALLBACK_NEGOTIATION_EVENTS, NEGOTIATION_PLAYBACK_DELAYS_MS);
         return;
       }
 
-      // Real network negotiate call
       const response = await fetch('/api/negotiate', {
         method: 'POST',
         headers: {
@@ -445,9 +421,104 @@ export default function App() {
       await readStream(response);
     } catch (err) {
       console.error("Negotiate failed:", err);
-      dispatchers.addTerminalLine({ type: 'error', message: `Failed to execute auto-negotiation: ${err.message}` });
+      dispatchers.addTerminalLine({ type: 'error', message: `Failed to execute negotiation: ${err.message}` });
     } finally {
       setIsStreaming(false);
+    }
+  };
+
+  // Presenter simulates the client pushing for more than the approved counter — ARIA re-runs
+  // a subset of the analysis and proposes an alternate ship date at a mechanically lower price
+  const handleClientPushesForMore = async () => {
+    setIsStreaming(true);
+
+    dispatchers.addTerminalLine({
+      type: 'separator',
+      content: '--- CLIENT PUSHING FOR MORE — RE-ENGAGING ARIA ---'
+    });
+    dispatchers.addTerminalLine({
+      type: 'thinking',
+      content: `Ahmad Farouk is asking for an even better price than our approved counter of MYR ${rateCard?.minimum_acceptable_myr || 3492}. Let me check if a different ship date opens up a genuinely cheaper window.`
+    });
+
+    try {
+      if (isSafeMode || error) {
+        playEventSequence(FALLBACK_ALTERNATE_EVENTS, ALTERNATE_PLAYBACK_DELAYS_MS);
+        return;
+      }
+
+      const response = await fetch('/api/negotiate', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          mode: 'alternate_date',
+          original_quote_myr: rateCard?.total_quote_myr || 3880,
+          minimum_acceptable_myr: rateCard?.minimum_acceptable_myr || 3492,
+          counter_offer_myr: 3300,
+          client_name: 'Ahmad Farouk',
+          rfq_id: 'MC-2026-0441',
+          base_rate_myr: rateCard?.base_rate_myr,
+          fuel_surcharge_pct: 15,
+          has_insurance: true,
+          has_escort: true,
+          target_margin_pct: rateCard?.applied_margin_pct || 22,
+          route_id: 'KUA-PEN-001',
+          current_ship_date: '2026-07-05',
+        })
+      });
+
+      if (!response.ok) throw new Error(`HTTP error ${response.status}`);
+
+      await readStream(response);
+    } catch (err) {
+      console.error("Alternate-date negotiation failed:", err);
+      dispatchers.addTerminalLine({ type: 'error', message: `Failed to execute alternate-date analysis: ${err.message}` });
+    } finally {
+      setIsStreaming(false);
+    }
+  };
+
+  // Admin types a freeform WhatsApp reply — real Claude call, regardless of Safe Mode,
+  // since this is the one capability that must stay genuinely interactive at all times.
+  const handleAdminChatSend = async (text) => {
+    const trimmed = (text || '').trim();
+    if (!trimmed || isAdminChatLoading) return;
+
+    pushWhatsapp({ sender: 'Sales Admin', avatarInitials: 'SA', timestamp: timeMY(), content: trimmed, isOutgoing: false });
+
+    const historyForRequest = adminChatHistory;
+    setAdminChatHistory(prev => [...prev, { role: 'admin', content: trimmed }]);
+    setIsAdminChatLoading(true);
+
+    try {
+      const response = await fetch('/api/admin-chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          pending_action: pendingApproval,
+          admin_message: trimmed,
+          chat_history: historyForRequest,
+        }),
+      });
+
+      const data = await response.json();
+
+      pushWhatsapp({ sender: 'ARIA Bot', avatarInitials: 'AB', timestamp: timeMY(), content: data.reply_text, isOutgoing: true });
+      setAdminChatHistory(prev => [...prev, { role: 'aria', content: data.reply_text }]);
+
+      if (data.decision === 'approve' && pendingApproval?.email_ref) {
+        const ref = pendingApproval.email_ref;
+        setEmails(prev => prev.map(e => (e.id === ref ? { ...e, status: 'sent' } : e)));
+        setPendingApprovalState(null);
+      }
+      // reject/clarify: keep pendingApproval as-is, conversation continues
+    } catch (err) {
+      console.error("Admin chat failed:", err);
+      pushWhatsapp({ sender: 'ARIA Bot', avatarInitials: 'AB', timestamp: timeMY(), content: 'Sorry boss, connection hiccup on my end — mind repeating that?', isOutgoing: true });
+    } finally {
+      setIsAdminChatLoading(false);
     }
   };
 
@@ -497,14 +568,14 @@ export default function App() {
             isStreaming={isStreaming}
           />
         </div>
-        
+
         <div style={{ ...styles.column, width: '45%' }}>
           <AgentTerminal
             terminalLines={terminalLines}
             isStreaming={isStreaming}
           />
         </div>
-        
+
         <div style={{ ...styles.column, width: '30%' }}>
           <OutputPanel
             rateCard={rateCard}
@@ -514,9 +585,17 @@ export default function App() {
             isStreaming={isStreaming}
             editMode={editMode}
             negotiationResult={negotiationResult}
+            alternateOffer={alternateOffer}
+            pendingApproval={pendingApproval}
+            quoteSent={quoteSent}
+            negotiationReplySent={negotiationReplySent}
+            alternateOfferSent={alternateOfferSent}
+            isAdminChatLoading={isAdminChatLoading}
             onAmendQuote={handleAmendQuote}
-            onAutoNegotiate={handleAutoNegotiate}
             onRecalculate={handleRecalculate}
+            onSimulateClientCounter={handleSimulateClientCounter}
+            onClientPushesForMore={handleClientPushesForMore}
+            onSendAdminMessage={handleAdminChatSend}
             onAcceptFinal={handleAcceptFinal}
             onEscalate={handleEscalate}
           />

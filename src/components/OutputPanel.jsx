@@ -11,9 +11,17 @@ export default function OutputPanel({
   isStreaming,
   editMode,
   negotiationResult,
+  alternateOffer,
+  pendingApproval,
+  quoteSent,
+  negotiationReplySent,
+  alternateOfferSent,
+  isAdminChatLoading,
   onAmendQuote,
-  onAutoNegotiate,
   onRecalculate,
+  onSimulateClientCounter,
+  onClientPushesForMore,
+  onSendAdminMessage,
   onAcceptFinal,
   onEscalate
 }) {
@@ -46,6 +54,11 @@ export default function OutputPanel({
     }
   }, [rateCard]);
 
+  const showAmendQuote = isDone && !isStreaming;
+  const showClientPushesForMore = !pendingApproval && negotiationResult?.decision === 'counter' && negotiationReplySent && !alternateOffer;
+  const showAcceptEscalate = !pendingApproval && (alternateOfferSent || (negotiationReplySent && negotiationResult));
+  const showSimulateClientCounter = !pendingApproval && quoteSent && !negotiationResult;
+
   return (
     <div style={styles.container}>
       {/* Scrollable stack of simulator screens */}
@@ -64,61 +77,86 @@ export default function OutputPanel({
           </div>
 
           <div className={`${whatsappMessages.length === 0 ? 'placeholder-pulse' : 'fade-in-up'} ${flashWhatsapp ? 'flash-updated' : ''}`}>
-            <WhatsAppSimulator messages={whatsappMessages} />
+            <WhatsAppSimulator
+              messages={whatsappMessages}
+              canReply={!!pendingApproval}
+              isLoading={isAdminChatLoading}
+              onSendMessage={onSendAdminMessage}
+            />
           </div>
         </div>
       </div>
 
       {/* Persistent action panel at bottom */}
       <div style={styles.actionPanel}>
-        {!negotiationResult ? (
-          <div style={styles.buttonRow}>
-            <button
-              onClick={onAmendQuote}
-              disabled={!isDone || isStreaming}
-              style={{
-                ...styles.button,
-                ...styles.amendBtn,
-                ...((!isDone || isStreaming) ? styles.disabledBtn : {}),
-                ...(editMode ? styles.amendBtnActive : {})
-              }}
-            >
-              {editMode ? '❌ Cancel Amendment' : '✏️ Amend Quote'}
-            </button>
+        {pendingApproval && (
+          <div style={styles.pendingBanner}>
+            ⏳ Awaiting admin decision in WhatsApp — {pendingApproval.summary}
+          </div>
+        )}
 
+        <div style={styles.buttonRow}>
+          <button
+            onClick={onAmendQuote}
+            disabled={!showAmendQuote}
+            style={{
+              ...styles.button,
+              ...styles.amendBtn,
+              ...(!showAmendQuote ? styles.disabledBtn : {}),
+              ...(editMode ? styles.amendBtnActive : {})
+            }}
+          >
+            {editMode ? '❌ Cancel Amendment' : '✏️ Amend Quote'}
+          </button>
+
+          {showSimulateClientCounter && (
             <button
-              onClick={onAutoNegotiate}
-              disabled={!isDone || isStreaming || editMode}
+              onClick={onSimulateClientCounter}
+              disabled={isStreaming || editMode}
               style={{
                 ...styles.button,
                 ...styles.negotiateBtn,
-                ...((!isDone || isStreaming || editMode) ? styles.disabledBtn : {})
+                ...((isStreaming || editMode) ? styles.disabledBtn : {})
               }}
             >
-              ✅ Approve &amp; Auto-Negotiate
+              💬 Simulate Client Counter-Offer
             </button>
-          </div>
-        ) : (
-          <div style={styles.buttonRow}>
-            <button
-              onClick={onAcceptFinal}
-              style={{
-                ...styles.button,
-                ...styles.acceptFinalBtn,
-              }}
-            >
-              🤝 Accept Final Offer
-            </button>
+          )}
+        </div>
 
-            <button
-              onClick={onEscalate}
-              style={{
-                ...styles.button,
-                ...styles.escalateBtn,
-              }}
-            >
-              ⚠️ Escalate to Manager
-            </button>
+        {(showClientPushesForMore || showAcceptEscalate) && (
+          <div style={{ ...styles.buttonRow, marginTop: '10px' }}>
+            {showClientPushesForMore && (
+              <button
+                onClick={onClientPushesForMore}
+                disabled={isStreaming}
+                style={{
+                  ...styles.button,
+                  ...styles.negotiateBtn,
+                  ...(isStreaming ? styles.disabledBtn : {})
+                }}
+              >
+                📈 Client Pushes for More
+              </button>
+            )}
+
+            {showAcceptEscalate && (
+              <>
+                <button
+                  onClick={onAcceptFinal}
+                  style={{ ...styles.button, ...styles.acceptFinalBtn }}
+                >
+                  🤝 Accept Final Offer
+                </button>
+
+                <button
+                  onClick={onEscalate}
+                  style={{ ...styles.button, ...styles.escalateBtn }}
+                >
+                  ⚠️ Escalate to Manager
+                </button>
+              </>
+            )}
           </div>
         )}
       </div>
@@ -148,6 +186,17 @@ const styles = {
   actionPanel: {
     padding: '12px 0 0 0',
     borderTop: '1px solid rgba(255, 255, 255, 0.05)',
+  },
+  pendingBanner: {
+    fontSize: '11px',
+    fontWeight: '600',
+    color: 'var(--accent-amber)',
+    backgroundColor: 'rgba(255, 184, 0, 0.08)',
+    border: '1px solid rgba(255, 184, 0, 0.25)',
+    borderRadius: '6px',
+    padding: '8px 10px',
+    marginBottom: '10px',
+    lineHeight: '1.4',
   },
   buttonRow: {
     display: 'flex',

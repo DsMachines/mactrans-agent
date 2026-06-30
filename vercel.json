@@ -3,7 +3,8 @@
     { "source": "/api/(.*)", "destination": "/api/$1" }
   ],
   "functions": {
-    "api/agent.js": { "maxDuration": 60 },
-    "api/negotiate.js": { "maxDuration": 30 }
+    "api/agent.js": { "maxDuration": 90 },
+    "api/negotiate.js": { "maxDuration": 60 },
+    "api/admin-chat.js": { "maxDuration": 20 }
   }
 }

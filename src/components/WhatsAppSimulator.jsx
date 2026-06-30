@@ -1,6 +1,8 @@
-import React from 'react';
+import React, { useState } from 'react';
 
-export default function WhatsAppSimulator({ messages = [] }) {
+export default function WhatsAppSimulator({ messages = [], canReply = false, isLoading = false, onSendMessage }) {
+  const [draft, setDraft] = useState('');
+
   if (!messages || messages.length === 0) {
     return (
       <div className="glass-panel placeholder-pulse" style={styles.placeholderContainer}>
@@ -8,6 +10,19 @@ export default function WhatsAppSimulator({ messages = [] }) {
       </div>
     );
   }
+
+  const submitDraft = () => {
+    if (!draft.trim() || !canReply || isLoading) return;
+    onSendMessage?.(draft);
+    setDraft('');
+  };
+
+  const handleKeyDown = (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      submitDraft();
+    }
+  };
 
   return (
     <div className="glass-panel" style={styles.container}>
@@ -56,6 +71,13 @@ export default function WhatsAppSimulator({ messages = [] }) {
             </div>
           );
         })}
+        {isLoading && (
+          <div style={{ ...styles.messageRow, justifyContent: 'flex-start' }}>
+            <div style={{ ...styles.bubble, ...styles.incomingBubble }}>
+              <div style={styles.messageContent}>ARIA is typing…</div>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Input Bar */}
@@ -64,11 +86,20 @@ export default function WhatsAppSimulator({ messages = [] }) {
         <span style={styles.inputIcon}>📎</span>
         <input
           type="text"
-          placeholder="Type a message"
-          disabled
-          style={styles.textInput}
+          placeholder={canReply ? "Type your reply to ARIA..." : "Nothing pending approval right now"}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={handleKeyDown}
+          disabled={!canReply || isLoading}
+          style={{ ...styles.textInput, opacity: canReply ? 1 : 0.5 }}
         />
-        <span style={styles.inputIcon}>🎤</span>
+        <span
+          style={{ ...styles.inputIcon, cursor: canReply ? 'pointer' : 'default', opacity: canReply && draft.trim() ? 1 : 0.4 }}
+          onClick={submitDraft}
+          title="Send"
+        >
+          ➤
+        </span>
       </div>
     </div>
   );
