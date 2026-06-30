@@ -56,23 +56,31 @@ function hashStr(str) {
 }
 
 // ── Tool 1: extract_rfq_data ────────────────────────────────────────────────
-// Returns hardcoded extraction — the actual parsing is done by Claude from the raw text.
-// This tool's return value is intentionally static; Claude's real work is reasoning over the RFQ.
-const extract_rfq_data = (args) => ({
-  rfq_id: 'MC-2026-0441',
-  client_name: 'Global Construct Sdn Bhd',
-  contact_person: 'Ahmad Farouk',
-  contact_email: 'procurement@globalconstruct.com.my',
-  cargo_type: 'industrial_machinery',
-  cargo_description: 'CNC milling machines (3 units), crated',
-  weight_kg: 12000,
-  dimensions_m3: 42,
-  origin: 'Kuala Lumpur (Cheras Industrial Zone)',
-  destination: 'Penang Port, Butterworth',
-  required_by_date: '2026-07-05',
-  special_requirements: ['flatbed_required', 'escort_vehicle', 'insurance_required'],
-  parsed_confidence: 'high',
-});
+// Claude has already read the raw email in its prompt — this tool takes Claude's own
+// structured reading as its arguments (rather than re-parsing raw text in JS) and just
+// normalizes/defaults fields per existing business rules (insurance/escort thresholds).
+const extract_rfq_data = (args) => {
+  const weight = Number(args.weight_kg) || 0;
+  const requirements = new Set(args.special_requirements || []);
+  if (weight > 5000) requirements.add('insurance_required');
+  if (weight > 10000) requirements.add('escort_vehicle');
+
+  return {
+    rfq_id: args.rfq_id || `MC-${new Date().getFullYear()}-${String(hashStr(args.contact_email || args.client_name || '') % 9000 + 1000)}`,
+    client_name: args.client_name || 'Unknown Client',
+    contact_person: args.contact_person || 'Client Contact',
+    contact_email: args.contact_email || '',
+    cargo_type: args.cargo_type || 'general_freight',
+    cargo_description: args.cargo_description || '',
+    weight_kg: weight,
+    dimensions_m3: Number(args.dimensions_m3) || 0,
+    origin: args.origin || '',
+    destination: args.destination || '',
+    required_by_date: args.required_by_date || '',
+    special_requirements: Array.from(requirements),
+    parsed_confidence: args.parsed_confidence || 'medium',
+  };
+};
 
 // ── Tool 2: get_route ───────────────────────────────────────────────────────
 // Responds to origin and destination — different city pairs return different data.
@@ -310,11 +318,12 @@ const select_truck_and_driver = (args) => {
 };
 
 // ── Tool 3: get_market_rate ─────────────────────────────────────────────────
-// Base rate scales with distance and cargo weight.
+// Base rate scales with distance and cargo weight. This is advisory data shown in
+// the terminal narration — calculate_quote always prioritizes the real round_trip_km
+// when available, so this isn't pricing-critical, just narration consistency.
 const get_market_rate = (args) => {
-  // Infer distance from route_id or default to 350km
-  const distanceGuess = 350; // conservative default — actual distance is in get_route result
-  const distFactor = distanceGuess / 350;
+  const distance = Number(args.distance_km) || 350; // 350 = conservative default if no real distance yet
+  const distFactor = distance / 350;
 
   const weight = Number(args.weight_kg) || 12000;
   const weightTier = weight > 20000 ? 1.4
