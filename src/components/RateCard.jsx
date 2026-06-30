@@ -7,6 +7,8 @@ export default function RateCard({ data, editMode, onRecalculate }) {
     insurance_fee_myr: 0,
     escort_fee_myr: 0,
     handling_fee_myr: 0,
+    weather_contingency_myr: 0,
+    discount_applied_myr: 0,
   });
 
   // Sync editable values whenever new data arrives from Claude
@@ -18,6 +20,8 @@ export default function RateCard({ data, editMode, onRecalculate }) {
         insurance_fee_myr: Number(data.insurance_fee_myr || 150),
         escort_fee_myr: Number(data.escort_fee_myr || 200),
         handling_fee_myr: Number(data.handling_fee_myr || 50),
+        weather_contingency_myr: Number(data.weather_contingency_myr || 0),
+        discount_applied_myr: Number(data.discount_applied_myr || 0),
       });
     }
   }, [data]);
@@ -38,7 +42,9 @@ export default function RateCard({ data, editMode, onRecalculate }) {
 
   const handleRecalculateClick = () => {
     if (onRecalculate) {
-      // Pass all current line-item values plus the newly computed total
+      // Pass all current line-item values (including discount/contingency) plus the
+      // newly computed total, so nothing the admin sees here is hidden from downstream
+      // calculations or the regenerated email.
       onRecalculate({
         ...values,
         total_quote_myr: editTotal,
@@ -49,21 +55,25 @@ export default function RateCard({ data, editMode, onRecalculate }) {
   };
 
   // ── Total calculation ───────────────────────────────────────────────────
-  // Read-only: use the authoritative final_quote from Claude's calculate_quote
-  //            (which includes the discount, so it's lower than the line-item sum).
-  // Edit mode: live sum of whatever the user has typed in.
-  const lineItemSum =
+  // Both modes now sum every line item that actually feeds the total — including
+  // weather contingency — and subtract the discount explicitly, so the displayed
+  // total always reconciles with the visible rows (this used to silently diverge
+  // whenever weather_contingency_myr was non-zero, since it fed calculate_quote's
+  // subtotal/discount/total math but was never rendered as its own row).
+  const grossLineItemSum =
     values.base_rate_myr +
     values.fuel_surcharge_myr +
     values.insurance_fee_myr +
     values.escort_fee_myr +
-    values.handling_fee_myr;
+    values.handling_fee_myr +
+    values.weather_contingency_myr;
 
-  const readOnlyTotal = data.total_quote_myr ?? lineItemSum;
-  const editTotal = lineItemSum;
+  const editTotal = grossLineItemSum - values.discount_applied_myr;
+  const readOnlyTotal = data.total_quote_myr ?? editTotal;
   const displayTotal = editMode ? editTotal : readOnlyTotal;
 
   const discountAmount = data.discount_applied_myr || 0;
+  const weatherAmount = data.weather_contingency_myr || 0;
 
   // ── Formatting ──────────────────────────────────────────────────────────
   const fmt = (amount) =>
@@ -128,7 +138,13 @@ export default function RateCard({ data, editMode, onRecalculate }) {
             {renderRow('Escort Vehicle', 'escort_fee_myr', values.escort_fee_myr)}
             {renderRow('Handling Fee', 'handling_fee_myr', values.handling_fee_myr)}
 
-            {/* Discount row — only visible in read-only mode when a discount exists */}
+            {/* Weather contingency — only shown when non-zero in read-only mode, but always
+                editable in edit mode so the admin can add/remove/adjust it directly */}
+            {(editMode || weatherAmount > 0) && renderRow('Weather Contingency', 'weather_contingency_myr', values.weather_contingency_myr)}
+
+            {/* Discount row — read-only display when present; always editable (incl. to 0
+                to remove it entirely) in edit mode, since this is an automatic goodwill
+                discount baked into every quote, not something the admin chose */}
             {!editMode && discountAmount > 0 && (
               <tr style={styles.row}>
                 <td style={{ ...styles.labelCell, color: 'var(--accent-green)', fontStyle: 'italic' }}>
@@ -138,6 +154,24 @@ export default function RateCard({ data, editMode, onRecalculate }) {
                   <span style={{ ...styles.valueText, color: 'var(--accent-green)' }}>
                     − {fmt(discountAmount)}
                   </span>
+                </td>
+              </tr>
+            )}
+            {editMode && (
+              <tr style={styles.row}>
+                <td style={{ ...styles.labelCell, color: 'var(--accent-green)', fontStyle: 'italic' }}>
+                  Discount (0 to remove)
+                </td>
+                <td style={styles.valueCell}>
+                  <div style={styles.inputContainer}>
+                    <span style={styles.inputPrefix}>− MYR</span>
+                    <input
+                      type="number"
+                      value={values.discount_applied_myr}
+                      onChange={e => handleChange('discount_applied_myr', e.target.value)}
+                      style={styles.numberInput}
+                    />
+                  </div>
                 </td>
               </tr>
             )}

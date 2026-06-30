@@ -299,6 +299,12 @@ export default function App() {
     setIsStreaming(true);
     setEditMode(false);
 
+    // Update the displayed Rate Card immediately and deterministically, client-side —
+    // this must NOT depend on whether the backend's regenerate_email call happens to call
+    // calculate_quote again, since it may just redraft text from the values we already sent it.
+    const updatedRateCard = { ...rateCard, ...amendedValues };
+    dispatchers.setRateCard(updatedRateCard);
+
     dispatchers.addTerminalLine({
       type: 'separator',
       content: '🔄 RATE CARD AMENDED — REGENERATING OUTBOUND LOGISTICS COMMUNICATIONS 🔄'
@@ -311,8 +317,15 @@ export default function App() {
     try {
       if (isSafeMode) {
         setTimeout(() => {
-          const updatedRateCard = { ...rateCard, ...amendedValues };
-          dispatchers.setRateCard(updatedRateCard);
+          const lineItems = [
+            `- Base Freight Rate: MYR ${amendedValues.base_rate_myr.toFixed(2)}`,
+            `- Fuel Surcharge: MYR ${amendedValues.fuel_surcharge_myr.toFixed(2)}`,
+            `- Cargo Insurance: MYR ${amendedValues.insurance_fee_myr.toFixed(2)}`,
+            `- Escort Vehicle: MYR ${amendedValues.escort_fee_myr.toFixed(2)}`,
+            `- Handling: MYR ${amendedValues.handling_fee_myr.toFixed(2)}`,
+            amendedValues.weather_contingency_myr ? `- Weather Contingency: MYR ${Number(amendedValues.weather_contingency_myr).toFixed(2)}` : null,
+            amendedValues.discount_applied_myr ? `- Discount: − MYR ${Number(amendedValues.discount_applied_myr).toFixed(2)}` : null,
+          ].filter(Boolean).join('\n');
 
           dispatchers.setEmail({
             email_ref: 'email-1',
@@ -322,7 +335,7 @@ export default function App() {
             to_name: "Ahmad Farouk, Global Construct Sdn Bhd",
             subject: "RE: RFQ #MC-2026-0441 — Freight Quotation: KL to Penang Port",
             timestamp: nowMY({ day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }),
-            body: `Dear Mr. Ahmad,\n\nThank you for submitting RFQ #MC-2026-0441. We are pleased to provide our updated quotation for the transport of your CNC milling machines (3 units, crated) from Cheras Industrial Zone, Kuala Lumpur to Penang Port, Butterworth.\n\n**Quotation Summary (Amended):**\n- Base Freight Rate: MYR ${amendedValues.base_rate_myr.toFixed(2)}\n- Fuel Surcharge: MYR ${amendedValues.fuel_surcharge_myr.toFixed(2)}\n- Cargo Insurance: MYR ${amendedValues.insurance_fee_myr.toFixed(2)}\n- Escort Vehicle: MYR ${amendedValues.escort_fee_myr.toFixed(2)}\n- Handling: MYR ${amendedValues.handling_fee_myr.toFixed(2)}\n- **Total: MYR ${amendedValues.total_quote_myr.toFixed(2)}**\n\n**Carrier:** Trans-Peninsular Express Sdn Bhd (Rating: 4.8/5)\n**Estimated Transit:** 4.5 hours via North-South Expressway\n**Quote Valid Until:** 6 July 2026\n\nThis quote includes full cargo insurance coverage and a dedicated escort vehicle as requested. We recommend a 05:00 departure to avoid peak congestion near the Ipoh interchange.\n\nPlease confirm your acceptance and we will proceed with booking immediately.\n\nWarm regards,\nARIA | Mactrans Logistics`
+            body: `Dear Mr. Ahmad,\n\nThank you for submitting RFQ #MC-2026-0441. We are pleased to provide our updated quotation for the transport of your CNC milling machines (3 units, crated) from Cheras Industrial Zone, Kuala Lumpur to Penang Port, Butterworth.\n\n**Quotation Summary (Amended):**\n${lineItems}\n- **Total: MYR ${amendedValues.total_quote_myr.toFixed(2)}**\n\n**Carrier:** Trans-Peninsular Express Sdn Bhd (Rating: 4.8/5)\n**Estimated Transit:** 4.5 hours via North-South Expressway\n**Quote Valid Until:** 6 July 2026\n\nThis quote includes full cargo insurance coverage and a dedicated escort vehicle as requested. We recommend a 05:00 departure to avoid peak congestion near the Ipoh interchange.\n\nPlease confirm your acceptance and we will proceed with booking immediately.\n\nWarm regards,\nARIA | Mactrans Logistics`
           });
 
           const waPrompt = `Boss, rate card manually adjusted — new quote MYR ${amendedValues.total_quote_myr.toLocaleString()}. Drafted the updated email, approve to send? 👍`;
