@@ -505,7 +505,9 @@ export default function App() {
     setAdminChatHistory(prev => [...prev, { role: 'admin', content: trimmed }]);
     setIsAdminChatLoading(true);
 
-    const refEmail = emails.find(e => e.id === pendingApproval?.email_ref);
+    // Fall back to the most recent email for context when chatting with nothing pending —
+    // the chat stays available at all times, not just during an active approval gate.
+    const refEmail = emails.find(e => e.id === pendingApproval?.email_ref) || emails[emails.length - 1];
 
     try {
       const response = await fetch('/api/admin-chat', {

@@ -86,7 +86,7 @@ export default function WhatsAppSimulator({ messages = [], canReply = false, isL
         <span style={styles.inputIcon}>📎</span>
         <input
           type="text"
-          placeholder={canReply ? "Type your reply to ARIA..." : "Nothing pending approval right now"}
+          placeholder="Message ARIA..."
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={handleKeyDown}

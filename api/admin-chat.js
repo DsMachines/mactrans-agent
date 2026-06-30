@@ -32,6 +32,10 @@ End your response with EXACTLY these two lines in this format, with no other tex
 [DECISION: approve|reject|clarify]
 [QUOTE_PATCH: <compact JSON object>|none]`;
 
+// Used when nothing is currently pending approval — the chat is always available, not just
+// during an active approval gate, so this is a plain conversational mode with no markers.
+const GENERAL_CHAT_PROMPT = `You are ARIA, an autonomous freight-broker agent at Mactrans Logistics Sdn Bhd, chatting on WhatsApp with your sales admin (your boss). Nothing is currently awaiting their approval. Reply naturally and helpfully, like a sharp, slightly informal colleague — answer questions about recent quotes/clients using whatever context you're given, or just chat. Keep it under 4 lines, casual WhatsApp tone, emojis sparingly. Do not use any [DECISION] or [QUOTE_PATCH] markers — just reply in plain text.`;
+
 // Same clean marker convention used by api/agent.js and api/negotiate.js.
 function parseOutputBlocks(text) {
   const emailMatch = text.match(/\[EMAIL_DRAFT\]([\s\S]*?)(\[WHATSAPP_MESSAGE\]|$)/);
@@ -115,8 +119,8 @@ module.exports = async (req, res) => {
 
   const { pending_action, admin_message, chat_history, client_name, original_email_body } = req.body;
 
-  if (!admin_message || !pending_action) {
-    res.status(400).json({ error: "Missing pending_action or admin_message." });
+  if (!admin_message) {
+    res.status(400).json({ error: "Missing admin_message." });
     return;
   }
 
@@ -128,6 +132,28 @@ module.exports = async (req, res) => {
     const historyText = (chat_history || [])
       .map((turn) => `${turn.role === "admin" ? "Admin" : "ARIA"}: ${turn.content}`)
       .join("\n");
+
+    // The chat is always available — even with nothing pending, the admin can keep talking
+    // to ARIA. This is a plain conversational reply with no approval/patch mechanics.
+    if (!pending_action) {
+      const generalPrompt = `${historyText ? `PRIOR CONVERSATION THIS SESSION:\n${historyText}\n\n` : ""}${client_name ? `Most recent client context: ${client_name}${original_email_body ? `\nLast drafted/sent email:\n"""\n${original_email_body}\n"""\n` : ""}\n\n` : ""}ADMIN JUST SAID:\n"${admin_message}"\n\nThere is no pending action right now. Reply as ARIA.`;
+
+      const generalResponse = await anthropic.messages.create({
+        model: "claude-haiku-4-5-20251001",
+        max_tokens: 300,
+        system: GENERAL_CHAT_PROMPT,
+        messages: [{ role: "user", content: generalPrompt }],
+      });
+
+      const reply_text = generalResponse.content
+        .filter((b) => b.type === "text")
+        .map((b) => b.text)
+        .join("\n")
+        .trim() || "Standing by, boss.";
+
+      res.status(200).json({ decision: "none", reply_text, revised: null });
+      return;
+    }
 
     const contextPrompt = `PENDING ACTION AWAITING APPROVAL:\nType: ${pending_action.action_type}\nSummary: ${pending_action.summary}\nQuote details: ${JSON.stringify(pending_action.quote_snapshot || {}, null, 2)}\n\n${historyText ? `PRIOR CONVERSATION THIS SESSION:\n${historyText}\n\n` : ""}ADMIN JUST SAID:\n"${admin_message}"\n\nReply as ARIA and end with the [DECISION: ...] and [QUOTE_PATCH: ...] markers.`;
 

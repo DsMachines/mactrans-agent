@@ -82,7 +82,7 @@ export default function OutputPanel({
           <div className={`${whatsappMessages.length === 0 ? 'placeholder-pulse' : 'fade-in-up'} ${flashWhatsapp ? 'flash-updated' : ''}`}>
             <WhatsAppSimulator
               messages={whatsappMessages}
-              canReply={!!pendingApproval}
+              canReply={true}
               isLoading={isAdminChatLoading}
               onSendMessage={onSendAdminMessage}
             />
