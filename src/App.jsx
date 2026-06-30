@@ -80,6 +80,7 @@ export default function App() {
         contact_email: event.contact_email,
         origin: event.origin,
         destination: event.destination,
+        required_by_date: event.required_by_date,
       });
     },
     setEmail: (event) => {
@@ -507,7 +508,8 @@ export default function App() {
           has_escort: true,
           target_margin_pct: rateCard?.applied_margin_pct || 22,
           route_id: 'KUA-PEN-001',
-          current_ship_date: '2026-07-05',
+          current_ship_date: effectiveClient.required_by_date,
+          deadline_date: effectiveClient.required_by_date,
         })
       });
 

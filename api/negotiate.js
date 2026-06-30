@@ -44,8 +44,10 @@ const ALTERNATE_DATE_TOOLS = [
       properties: {
         route_id: { type: "string" },
         current_ship_date: { type: "string" },
+        deadline_date: { type: "string", description: "The client's hard required-by date — never propose an alternate_date later than this" },
         original_quote_myr: { type: "number" },
         requested_price_myr: { type: "number" },
+        minimum_acceptable_myr: { type: "number" },
       },
       required: ["route_id", "original_quote_myr", "requested_price_myr"],
     },
@@ -98,6 +100,7 @@ module.exports = async (req, res) => {
     // Used only when mode === "alternate_date"
     route_id,
     current_ship_date,
+    required_by_date,
   } = req.body;
 
   if (!original_quote_myr || !counter_offer_myr || !minimum_acceptable_myr) {
@@ -124,7 +127,7 @@ module.exports = async (req, res) => {
 
   try {
     const negotiatePrompt = isAlternateDate
-      ? `${client_name} is pushing for a further discount beyond our approved floor of MYR ${minimum_acceptable_myr} on RFQ ${rfq_id} — their latest ask is MYR ${counter_offer_myr}.\n\nFirst call evaluate_counter_offer again with original_quote_myr=${original_quote_myr}, counter_offer_myr=${counter_offer_myr}, minimum_acceptable_myr=${minimum_acceptable_myr} to reconfirm we cannot go lower on the CURRENT ship date.\n\nThen call check_alternate_schedule for route_id="${route_id || 'KUA-PEN-001'}", current_ship_date="${current_ship_date || ''}", original_quote_myr=${original_quote_myr}, and requested_price_myr=${counter_offer_myr} to find a genuinely cheaper window and the exact price it makes achievable.\n\ncheck_alternate_schedule's recommended_quote_myr is the final, non-negotiable price — never invent, round, or adjust it yourself. If meets_client_request is true, the alternate window fully covers their MYR ${counter_offer_myr} ask; frame the email as meeting their number exactly. If false, recommended_quote_myr is the best achievable via this window — be upfront that it's the best we can do, still better than the current floor.\n\nDraft an email to the client proposing the new ship date, the non-peak departure time window, and the reassigned truck/driver from check_alternate_schedule's result, explaining plainly that shifting to that non-peak slot is what makes the lower rate possible — frame it as "we found a way to work with your number," not as a discount concession. Then draft a WhatsApp message asking the admin to approve sending it. Never reveal breakeven or internal cost structure.`
+      ? `${client_name} is pushing for a further discount beyond our approved floor of MYR ${minimum_acceptable_myr} on RFQ ${rfq_id} — their latest ask is MYR ${counter_offer_myr}.\n\nThe client's hard required-by deadline for this shipment is ${required_by_date || 'not specified'} — this is non-negotiable; we cannot ship later than that date under any circumstances.\n\nFirst call evaluate_counter_offer again with original_quote_myr=${original_quote_myr}, counter_offer_myr=${counter_offer_myr}, minimum_acceptable_myr=${minimum_acceptable_myr} to reconfirm we cannot go lower on the CURRENT ship date.\n\nThen call check_alternate_schedule for route_id="${route_id || 'KUA-PEN-001'}", current_ship_date="${current_ship_date || ''}", deadline_date="${required_by_date || ''}", original_quote_myr=${original_quote_myr}, requested_price_myr=${counter_offer_myr}, and minimum_acceptable_myr=${minimum_acceptable_myr} to find a genuinely cheaper window and the exact price it makes achievable.\n\ncheck_alternate_schedule's recommended_quote_myr is the final, non-negotiable price — never invent, round, or adjust it yourself, and never propose an alternate_date later than the client's deadline above (the tool already enforces this, but do not override or second-guess its date). If the result has feasible: false, do NOT propose any new date — instead draft an email politely explaining that no shipping window within their required deadline can support a lower price, and that the already-approved floor of MYR ${minimum_acceptable_myr} stands as final. If feasible: true and meets_client_request is true, the alternate window fully covers their MYR ${counter_offer_myr} ask; frame the email as meeting their number exactly. If feasible: true but meets_client_request is false, recommended_quote_myr is the best achievable via this window — be upfront that it's the best we can do, still better than the current floor.\n\nWhen a feasible alternate window exists, draft an email to the client proposing the new ship date, the non-peak departure time window, and the reassigned truck/driver from check_alternate_schedule's result, explaining plainly that shifting to that non-peak slot is what makes the lower rate possible — frame it as "we found a way to work with your number," not as a discount concession. Then draft a WhatsApp message asking the admin to approve sending it. Never reveal breakeven or internal cost structure.`
       : `A counter-offer has arrived from ${client_name} for RFQ ${rfq_id}.\n\nOriginal quote: MYR ${original_quote_myr}\nClient counter-offer: MYR ${counter_offer_myr}\nOur minimum acceptable price (10% floor): MYR ${minimum_acceptable_myr}\n\nPlease call evaluate_counter_offer to determine the business decision, then draft the appropriate reply email and a WhatsApp message asking the admin to approve sending it.\n\nRemember: never reveal breakeven or internal cost structure. Keep the reply professional and relationship-focused. The email is a DRAFT pending admin approval — do not say it has been sent.`;
 
     const messages = [{ role: "user", content: negotiatePrompt }];
@@ -175,7 +178,9 @@ module.exports = async (req, res) => {
                   type: "pending_action",
                   action_id: `act-${Date.now()}`,
                   action_type: "send_alternate_offer",
-                  summary: `Send alternate-date offer to ${client_name}: ship ${alternateScheduleResult.alternate_date} (${alternateScheduleResult.alternate_time_window}) at MYR ${finalAltPrice}?`,
+                  summary: alternateScheduleResult.feasible
+                    ? `Send alternate-date offer to ${client_name}: ship ${alternateScheduleResult.alternate_date} (${alternateScheduleResult.alternate_time_window}) at MYR ${finalAltPrice}?`
+                    : `Send response to ${client_name}: confirming the floor price of MYR ${finalAltPrice} stands, no cheaper window available within their deadline?`,
                   email_ref: "email-alternate-offer",
                   whatsapp_prompt: waBody || "Boss, found a way to work with this client's number via a schedule change — approve to send?",
                   quote_snapshot: {

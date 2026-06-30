@@ -472,12 +472,43 @@ const check_alternate_schedule = (args) => {
   const current = args.current_ship_date && !isNaN(new Date(args.current_ship_date))
     ? new Date(args.current_ship_date)
     : new Date();
-  const alt = new Date(current);
-  alt.setDate(alt.getDate() + 4);
-  const altDateStr = alt.toISOString().split('T')[0];
+  const deadline = args.deadline_date && !isNaN(new Date(args.deadline_date))
+    ? new Date(args.deadline_date)
+    : null;
+
+  // Try the standard 4-day shift first, then progressively smaller shifts, picking the
+  // largest one that still lands on or before the client's deadline. If even a 1-day
+  // shift would blow past the deadline, there is no feasible cheaper window at all —
+  // never fabricate a date the client can't actually use.
+  let altDateStr = null;
+  for (const shiftDays of [4, 3, 2, 1]) {
+    const candidate = new Date(current);
+    candidate.setDate(candidate.getDate() + shiftDays);
+    if (!deadline || candidate <= deadline) {
+      altDateStr = candidate.toISOString().split('T')[0];
+      break;
+    }
+  }
 
   const originalPrice = Number(args.original_quote_myr) || 0;
   const requestedPrice = Number(args.requested_price_myr) || 0;
+  const minimumAcceptable = Number(args.minimum_acceptable_myr) || 0;
+
+  if (!altDateStr) {
+    return {
+      feasible: false,
+      alternate_date: null,
+      alternate_time_window: null,
+      alternate_truck_id: null,
+      alternate_driver_name: null,
+      reason: `No shipping window before the client's required deadline of ${args.deadline_date} can support a lower price than the already-approved floor.`,
+      estimated_savings_pct: 0,
+      recommended_quote_myr: minimumAcceptable || originalPrice,
+      meets_client_request: false,
+      alternate_weather: null,
+      alternate_traffic: null,
+    };
+  }
 
   // The lowest price the alternate window mechanically supports.
   const altWindowFloor = originalPrice > 0 ? Math.round(originalPrice * (1 - ALTERNATE_SAVINGS_PCT / 100)) : 0;
@@ -490,6 +521,7 @@ const check_alternate_schedule = (args) => {
   const recommendedQuoteMyr = altWindowFloor > 0 ? Math.max(altWindowFloor, clampedRequest) : clampedRequest;
 
   return {
+    feasible: true,
     alternate_date: altDateStr,
     alternate_time_window: '05:30–07:00 AM departure (non-peak slot, avoids the port\'s 7-9am truck-queue surcharge window)',
     alternate_truck_id: 'TPE-009',

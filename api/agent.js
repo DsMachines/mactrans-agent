@@ -398,6 +398,7 @@ module.exports = async (req, res) => {
                 contact_email: extractedData.contact_email,
                 origin: extractedData.origin,
                 destination: extractedData.destination,
+                required_by_date: extractedData.required_by_date,
               });
             }
 

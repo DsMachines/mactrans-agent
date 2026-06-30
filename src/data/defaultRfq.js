@@ -34,4 +34,5 @@ export const DEFAULT_CLIENT_INFO = {
   contact_email: 'procurement@globalconstruct.com.my',
   origin: 'Kuala Lumpur',
   destination: 'Penang Port',
+  required_by_date: '2026-07-05',
 };
